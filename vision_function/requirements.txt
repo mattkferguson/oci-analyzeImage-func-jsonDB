@@ -1,0 +1,6 @@
+fdk
+oci
+six
+cryptography
+immutables
+oracledb==2.4.1

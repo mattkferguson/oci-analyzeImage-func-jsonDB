@@ -1,0 +1,57 @@
+<!doctype html>
+<title>Upload new File to OCI Object Storage</title>
+<style>
+    body { font-family: sans-serif; margin: 2em; }
+    .flashes { list-style: none; padding: 0; }
+    .flashes li { margin-bottom: 0.5em; padding: 0.5em; border-radius: 3px; }
+    .flashes .error { background: #f8d7da; color: #721c24; }
+    .flashes .success { background: #d4edda; color: #155724; }
+    .file-list { list-style: none; padding: 0; }
+    .file-list li { display: flex; justify-content: space-between; align-items: center; padding: 0.5em; border-bottom: 1px solid #ccc; }
+    .file-list div { display: flex; gap: 0.5em; }
+    .file-list form { margin: 0; }
+    .delete-btn { background: #dc3545; color: white; border: none; padding: 0.5em 1em; border-radius: 3px; cursor: pointer; }
+    .view-btn { background: #007bff; color: white; text-decoration: none; padding: 0.5em 1em; border-radius: 3px; }
+    .status { color: #6c757d; font-style: italic; }
+</style>
+<h1>Upload new File to OCI Object Storage (v1.1)</h1>
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    <ul class=flashes>
+    {% for category, message in messages %}
+      <li class="{{ category }}">{{ message }}</li>
+    {% endfor %}
+    </ul>
+  {% endif %}
+{% endwith %}
+<form method=post action="/upload" enctype=multipart/form-data>
+  <input type=file name=file>
+  <input type=submit value=Upload>
+</form>
+
+<hr>
+
+<h2>Files in Bucket</h2>
+{% if images %}
+    <ul class="file-list">
+        {% for image in images %}
+        <li>
+            <span>{{ image }}</span>
+            <div>
+                {% if image in results %}
+                    <a href="{{ url_for('view_result', image_filename=image) }}" class="view-btn">View Analysis</a>
+                {% else %}
+                    <span class="status">Analyzing...</span>
+                {% endif %}
+                <form action="{{ url_for('delete_file', filename=image) }}" method="post" onsubmit="return confirm('Are you sure you want to delete this file and its analysis?');">
+                    <button type="submit" class="delete-btn">Delete</button>
+                </form>
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+{% else %}
+    <p>No images uploaded yet.</p>
+{% endif %}
+<hr>
+<p><a href="{{ url_for('debug') }}">View Debug Info</a></p>

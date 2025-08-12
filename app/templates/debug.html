@@ -1,0 +1,29 @@
+<!doctype html>
+<title>Debug Information</title>
+<style>
+    body { font-family: sans-serif; margin: 2em; }
+    h1 { color: #333; }
+    h2 { color: #555; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1em; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background-color: #f2f2f2; }
+    tr:nth-child(even) { background-color: #f9f9f9; }
+    code { background-color: #eee; padding: 2px 4px; border-radius: 3px; }
+</style>
+<h1>Debug Information</h1>
+
+<h2>Environment Variables</h2>
+<table>
+    <tr>
+        <th>Variable</th>
+        <th>Value</th>
+    </tr>
+    {% for key, value in env_vars.items()|sort %}
+    <tr>
+        <td><code>{{ key }}</code></td>
+        <td><code>{{ value }}</code></td>
+    </tr>
+    {% endfor %}
+</table>
+<br>
+<a href="{{ url_for('index') }}">Back to Home</a>

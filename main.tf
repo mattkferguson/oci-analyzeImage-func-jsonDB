@@ -16,28 +16,32 @@ terraform {
 }
 
 provider "oci" {
-  tenancy_ocid = var.tenancy_ocid
-  region       = "us-chicago-1"
+  tenancy_ocid     = "ocid1.tenancy.oc1..aaaaaaaarvotah7kpkn7ypk5bvsxsag2cq37e7d6osue7prcytzc7rlc4ibq"
+  user_ocid        = "ocid1.user.oc1..aaaaaaaan3tdeoabrtzff5jtkg3b3mqw6nvuv2ine4hthphvs5ewadepzyjq"
+  fingerprint      = "a7:ac:14:57:04:6f:16:83:d3:95:23:43:00:db:94:10"
+  private_key_path = "/Users/matfergu/.oci/matt.ferguson@oracle.com-2025-08-25T20_22_04.101Z.pem"
+  region           = "ca-toronto-1"
 }
 
 variable "tenancy_ocid" {
   description = "The OCID of your tenancy."
-  default     = "ocid1.tenancy.oc1..aaaaaaaaiyavtwbz4kyu7g7b6wglllccbflmjx2lzk5nwpbme44mv54xu7dq"
+  type        = string
 }
 
 variable "compartment_ocid" {
   description = "The OCID of the compartment to deploy resources into."
-  default     = "ocid1.compartment.oc1..aaaaaaaai2xobwjbjjhudkkiyu4ilnozjcpw5zx7n2qrgywnzs2akanabnsq"
+  type        = string
 }
+
 
 variable "app_image_url" {
   description = "The full URL of the web app Docker image in OCIR."
-  default     = "ord.ocir.io/orasenatdpltintegration03/oci-image-upload-app-ajd:delete-fix-v3"
+  default     = "yyz.ocir.io/idrjq5zs9qgw/oci-image-upload-app-ajd:rest"
 }
 
 variable "function_image_url" {
   description = "The full URL of the function Docker image in OCIR."
-  default     = "ord.ocir.io/orasenatdpltintegration03/vision-analyzer-func-ajd:commit-fix"
+  default     = "yyz.ocir.io/idrjq5zs9qgw/vision-analyzer-func-ajd:rest-fixed"
 }
 
 variable "bucket_name" {
@@ -48,8 +52,13 @@ variable "bucket_name" {
 # ---------------------------------------------------------------------------
 # Data Sources
 # ---------------------------------------------------------------------------
-data "oci_identity_availability_domains" "ad" {
-  compartment_id = var.tenancy_ocid
+# data "oci_identity_availability_domains" "ad" {
+#   compartment_id = var.tenancy_ocid
+# }
+
+# Hardcode availability domain to bypass authentication issue
+locals {
+  availability_domain = "QLkr:CA-TORONTO-1-AD-1"
 }
 
 data "oci_objectstorage_namespace" "ns" {}
@@ -59,7 +68,7 @@ data "oci_core_services" "all_services" {}
 locals {
   all_services_in_network = [
     for service in data.oci_core_services.all_services.services : service
-    if service.name == "All ORD Services In Oracle Services Network"
+    if strcontains(lower(service.name), "all") && strcontains(lower(service.name), "oracle") && strcontains(lower(service.name), "services")
   ]
 }
 
@@ -195,7 +204,7 @@ resource "oci_database_autonomous_database" "vision_json_db" {
   compartment_id      = var.compartment_ocid
   db_name             = "visionjsondb"
   display_name        = "VisionJsonDB"
-  admin_password      = random_password.db_admin_password.result
+  admin_password      = local.db_admin_password
   db_workload         = "AJD"
   cpu_core_count      = 1
   data_storage_size_in_tbs = 1
@@ -204,16 +213,8 @@ resource "oci_database_autonomous_database" "vision_json_db" {
   license_model       = "LICENSE_INCLUDED"
 }
 
-resource "random_password" "db_admin_password" {
-  length      = 16
-  special     = true
-  number      = true
-  upper       = true
-  lower       = true
-  min_numeric = 1
-  min_upper   = 1
-  min_lower   = 1
-  min_special = 1
+locals {
+  db_admin_password = "0Racle123456"
 }
 
 # ---------------------------------------------------------------------------
@@ -234,8 +235,9 @@ resource "oci_functions_function" "vision_function" {
   timeout_in_seconds    = 300
   config = {
     DB_CONNECTION_STRING = oci_database_autonomous_database.vision_json_db.connection_strings[0].profiles[2].value # LOW TNS
-    DB_PASSWORD         = random_password.db_admin_password.result
+    DB_PASSWORD         = local.db_admin_password
     THICK_MODE_UPDATE   = "2025-08-06-x86-fix"
+    TENANCY_OCID        = var.tenancy_ocid
   }
 }
 
@@ -268,7 +270,7 @@ resource "oci_events_rule" "image_upload_event_rule" {
 # ---------------------------------------------------------------------------
 resource "oci_container_instances_container_instance" "oci_image_app_instance" {
   compartment_id      = var.compartment_ocid
-  availability_domain = data.oci_identity_availability_domains.ad.availability_domains[0].name
+  availability_domain = local.availability_domain
   display_name        = "oci-image-upload-app-ajd"
   shape               = "CI.Standard.E4.Flex"
   shape_config {
@@ -279,7 +281,7 @@ resource "oci_container_instances_container_instance" "oci_image_app_instance" {
     image_url = var.app_image_url
     environment_variables = {
       DB_CONNECTION_STRING = oci_database_autonomous_database.vision_json_db.connection_strings[0].profiles[2].value # LOW TNS
-      DB_PASSWORD         = random_password.db_admin_password.result
+      DB_PASSWORD         = local.db_admin_password
       THICK_MODE_UPDATE   = "2025-08-06-x86-fix"
     }
   }
@@ -344,4 +346,10 @@ resource "oci_load_balancer_listener" "app_listener" {
 output "application_url" {
   description = "The public URL for the web application."
   value       = "http://${oci_load_balancer_load_balancer.app_lb.ip_address_details[0].ip_address}"
+}
+
+output "db_admin_password" {
+  description = "The admin password for the Autonomous Database."
+  value       = local.db_admin_password
+  sensitive   = true
 }

@@ -1,6 +1,12 @@
-# OCI Event-Driven Image Analysis Application (with Autonomous JSON DB)
+# OCI Event-Driven Image Analysis Application (REST API Version)
 
-This project implements a full, event-driven pipeline on OCI. A web application uploads an image to a bucket, which triggers an OCI Function to perform object detection using the AI Vision service. The results are stored as documents in an **Oracle Autonomous JSON Database** and displayed in the web app.
+This project implements a full, event-driven pipeline on OCI. A web application uploads an image to a bucket, which triggers an OCI Function to perform object detection using the AI Vision service. The results are stored as documents in an **Oracle Autonomous JSON Database** via REST API and displayed in the web app.
+
+**Key Features:**
+- **Wallet-free deployment**: Uses Oracle REST Data Services (ORDS) for simplified database access
+- **Resource Principal authentication**: No credential management required
+- **Event-driven architecture**: Automatic processing when images are uploaded
+- **Complete data consistency**: Proper cleanup of both storage and database records
 
 ## Architecture Diagram
 ```
@@ -48,7 +54,7 @@ This is a critical step. You must create the correct IAM policies and dynamic gr
         *   **Name:** `WebAppInstanceDynamicGroup`
             *   **Matching Rule:** `ALL {resource.type = 'computecontainerinstance', resource.compartment.id = '<YOUR_COMPARTMENT_OCID>'}`
         *   **Name:** `VisionFunctionDynamicGroup`
-            *   **Matching Rule:** `ALL {resource.type = 'function', resource.compartment.id = '<YOUR_COMPARTMENT_OCID>'}`
+            *   **Matching Rule:** `ALL {resource.type = 'fnfunc', resource.compartment.id = '<YOUR_COMPARTMENT_OCID>'}`
     *(Replace `<YOUR_COMPARTMENT_OCID>` with the OCID of your compartment).*
 
 3.  **Create IAM Policy:**
@@ -91,89 +97,107 @@ This is a critical step. You must create the correct IAM policies and dynamic gr
     terraform apply -auto-approve
     ```
     
-    **Important:** This first deployment will create the Autonomous Database but the applications will fail to connect because wallet files are not yet configured.
+    **Important:** This first deployment will create the Autonomous Database. The applications will connect via REST API using the ADMIN user credentials.
 
 ---
 
-## Part 3: Configure Database Wallet (CRITICAL STEP)
+## Part 3: Configure Database REST API Access
 
-After the initial Terraform deployment, you must download and configure the database wallet files.
+The application uses Oracle REST Data Services (ORDS) to access the database using HTTP Basic Authentication.
 
-1.  **Download Database Wallet:**
+1.  **Verify Database REST API Endpoint:**
     *   In the OCI Console, navigate to **Oracle Database** → **Autonomous JSON Database**.
     *   Find your database (`visionjsondb`) and click on it.
-    *   Click **"DB Connection"**.
-    *   Click **"Download Wallet"**.
-    *   Select **"Instance Wallet"**.
-    *   Leave wallet password blank for auto-login wallet.
-    *   Download the `wallet.zip` file.
+    *   Click **"Service Console"** then **"Development"**.
+    *   Note the **"RESTful Services"** URL - this should be similar to:
+        `https://[unique-id]-visionjsondb.adb.[region].oraclecloudapps.com/ords/`
 
-2.  **Configure Wallet Files:**
-    *   Extract `wallet.zip` to a temporary directory.
-    *   Copy ALL extracted files to the `config/` directory in your project:
-    ```bash
-    # Extract wallet.zip and copy files
-    unzip wallet.zip -d /tmp/wallet
-    cp /tmp/wallet/* ./config/
-    ```
-    *   Ensure these files are present in `config/`:
-        - `tnsnames.ora`
-        - `sqlnet.ora`  
-        - `cwallet.sso`
-        - `ewallet.p12`
-        - `ewallet.pem`
-        - `keystore.jks`
-        - `truststore.jks`
-        - `ojdbc.properties`
-
-3.  **Enable Database Resource Principals (Optional):**
-    *   Connect to your Autonomous Database using SQL Developer or similar tool.
-    *   Run: `EXEC DBMS_CLOUD_ADMIN.ENABLE_RESOURCE_PRINCIPAL();`
-    *   This enables Resource Principals authentication (though the app will primarily use wallet-based authentication).
+2.  **Update Database Configuration:**
+    *   The application uses the ADMIN user and password configured in Terraform.
+    *   The REST API endpoint is currently hardcoded in the code - you may need to update it for your database instance.
+    *   Look for `DB_BASE_URL` in the REST version files to match your database's ORDS endpoint.
 
 ---
 
-## Part 4: Build and Push Container Images
+## Part 4: Set Up Oracle Container Registry (OCIR) and Build Images
 
 **IMPORTANT:** All container builds must use `--platform=linux/amd64` for Oracle Instant Client compatibility.
 
-1.  **Log in to OCIR:**
+1.  **Create Container Registry Repositories:**
+    *   In the OCI Console, navigate to **Developer Services** → **Container Registry**.
+    *   Click **"Create Repository"** and create two repositories:
+        *   **Repository Name:** `oci-image-upload-app-ajd` (for the web app)
+        *   **Repository Name:** `vision-analyzer-func-ajd` (for the function)
+        *   **Access:** Set to "Public" or "Private" as needed
+    *   Note down your **tenancy namespace** (visible in the repository URLs)
+
+2.  **Generate Auth Token:**
+    *   In the OCI Console, go to **Profile** → **User Settings** → **Auth Tokens**
+    *   Click **"Generate Token"** 
+    *   **Description:** "OCIR Docker Login"
+    *   Copy the generated token immediately (it won't be shown again)
+
+3.  **Log in to OCIR:**
     ```bash
-    # Get your auth token from OCI Console -> User Settings -> Auth Tokens
+    # Replace with your values:
+    # <region-key> = your region (e.g., ord for us-chicago-1, iad for us-ashburn-1)
+    # <tenancy-namespace> = your tenancy namespace from step 1
+    # <username> = your OCI username (e.g., matt.ferguson@oracle.com)
+    # <auth-token> = the token from step 2
+    
     echo '<your-auth-token>' | podman login <region-key>.ocir.io --username '<tenancy-namespace>/<username>' --password-stdin
+    
+    # Example:
+    # echo 'A1B2C3...' | podman login ord.ocir.io --username 'idrjq5zs9qgw/matt.ferguson@oracle.com' --password-stdin
     ```
 
-2.  **Build and Push the Web App Image:**
+4.  **Build and Push the Web App Image:**
     ```bash
     # From the project root directory
     podman build --platform=linux/amd64 -t oci-image-upload-app-ajd:latest -f Dockerfile .
     podman tag oci-image-upload-app-ajd:latest <region-key>.ocir.io/<tenancy-namespace>/oci-image-upload-app-ajd:latest
     podman push <region-key>.ocir.io/<tenancy-namespace>/oci-image-upload-app-ajd:latest
+    
+    # Example:
+    # podman tag oci-image-upload-app-ajd:latest ord.ocir.io/idrjq5zs9qgw/oci-image-upload-app-ajd:latest
+    # podman push ord.ocir.io/idrjq5zs9qgw/oci-image-upload-app-ajd:latest
     ```
 
-3.  **Build and Push the Function Image:**
+5.  **Build and Push the Function Image:**
     ```bash
     # From the project root directory  
     podman build --platform=linux/amd64 -t vision-analyzer-func-ajd:latest -f vision_function/Dockerfile .
     podman tag vision-analyzer-func-ajd:latest <region-key>.ocir.io/<tenancy-namespace>/vision-analyzer-func-ajd:latest
     podman push <region-key>.ocir.io/<tenancy-namespace>/vision-analyzer-func-ajd:latest
+    
+    # Example:
+    # podman tag vision-analyzer-func-ajd:latest ord.ocir.io/idrjq5zs9qgw/vision-analyzer-func-ajd:latest
+    # podman push ord.ocir.io/idrjq5zs9qgw/vision-analyzer-func-ajd:latest
+    ```
+
+6.  **Update terraform.tfvars with Your Image URLs:**
+    ```bash
+    # Update terraform.tfvars with your actual image URLs:
+    app_image_url      = "<region-key>.ocir.io/<tenancy-namespace>/oci-image-upload-app-ajd:latest"
+    function_image_url = "<region-key>.ocir.io/<tenancy-namespace>/vision-analyzer-func-ajd:latest"
     ```
 
 ---
 
 ## Part 5: Final Deployment
 
-After configuring wallet files and pushing images, update your infrastructure:
+After pushing images to OCIR, update your infrastructure:
 
 1.  **Apply Terraform Again:**
     ```bash
     terraform apply -auto-approve
     ```
-    This will update the container instances and function with the new images containing wallet files.
+    This will update the container instances and function with the new images.
 
 2.  **Verify Deployment:**
-    *   Check container instance logs for: `"Successfully connected using Wallet with ADMIN user and password"`
-    *   Check function logs for successful execution when images are uploaded.
+    *   Check container instance logs for successful OCI client initialization
+    *   Check function logs for successful execution when images are uploaded
+    *   Test the REST API endpoints to ensure database connectivity
 
 ---
 
@@ -196,28 +220,28 @@ After configuring wallet files and pushing images, update your infrastructure:
 ## Architecture Details
 
 ### Database Authentication
-The application uses Oracle Autonomous Database wallet-based authentication with fallback approaches:
-1. **Auto-login wallet** (primary method)
-2. **ADMIN user with password** (from Terraform-generated credentials)
-3. **Resource Principals** (fallback)
+The application uses Oracle Autonomous Database REST API authentication:
+1. **ADMIN user credentials** for ORDS REST API access
+2. **HTTP Basic Authentication** with username and password
+3. **Resource Principal authentication** for OCI services
 4. **Graceful degradation** (Object Storage continues working if database fails)
 
-### Oracle 23ai SODA Compatibility
-- **Uses thick mode** (`oracledb.init_oracle_client()`) for SODA compatibility with Oracle 23ai
-- **Oracle Instant Client 23ai** for latest database features
-- **SODA collections** with string-based keys for 23ai compatibility
-- **Transaction management** with explicit commit/rollback for reliable data operations
+### Oracle 23ai REST API Integration
+- **Uses REST API** for all database operations
+- **Oracle ORDS** (Oracle REST Data Services) for database access
+- **Simplified deployment** using REST API authentication
+- **HTTP-based operations** for storing and retrieving analysis results
 
 ### Container Configuration
 - **Web App**: Runs Flask application on port 5000
 - **Function**: Serverless function triggered by Object Storage events
-- **Both**: Include wallet files and Oracle environment variables
+- **Both**: Use Resource Principal authentication for OCI services
 - **ARM64 Compatibility**: Uses `--platform=linux/amd64` for Oracle Instant Client
 - **Function Architecture**: Uses `GENERIC_X86` shape for x86_64 compatibility
 
 ### Security Features
 - Resource Principals authentication for OCI services
-- Wallet-based database authentication
+- REST API authentication for database access
 - Minimal IAM permissions (least privilege)
 - Private subnets for container instances
 - Load balancer health checks
@@ -226,17 +250,18 @@ The application uses Oracle Autonomous Database wallet-based authentication with
 
 ## Lessons Learned
 
-### Critical Oracle 23ai SODA Issues
-1. **ORA-61754 Error**: "Using JSON type collections on Oracle Database release 23c or later requires a SODA driver for Oracle Database release 23c or later"
-   - **Solution**: Keep Oracle 23ai and use thick mode with `oracledb==2.4.1`
-   - **Alternative**: Could downgrade to Oracle 19c, but 23ai offers better JSON features
+### REST API Implementation Benefits
+1. **Simplified Database Access**: Direct HTTP calls to Oracle REST Data Services (ORDS)
+   - **No driver complexity**: Uses standard HTTP requests with `requests` library
+   - **No connection management**: Stateless REST calls eliminate connection pooling issues
 
-2. **SODA Document Deletion**: `SodaDocument.remove()` method doesn't exist
-   - **Solution**: Use `collection.find().key(doc.key).remove()` instead
-   - **Important**: Always call `connection.commit()` after SODA operations
+2. **Easier Deployment**: No Oracle Instant Client or wallet files required
+   - **Lightweight containers**: Smaller Docker images without Oracle dependencies
+   - **Cross-platform compatibility**: Works consistently across different architectures
 
-3. **Template Variable Mismatch**: Flask templates expecting different parameter names than view functions
-   - **Solution**: Ensure consistent naming between `render_template()` calls and template variables
+3. **Better Error Handling**: Standard HTTP status codes for database operations
+   - **Clear error messages**: HTTP responses provide detailed error information
+   - **Timeout control**: Configurable request timeouts for database calls
 
 ### Terraform Infrastructure Challenges
 1. **Password Requirements**: Autonomous Database requires specific password complexity
@@ -249,46 +274,46 @@ The application uses Oracle Autonomous Database wallet-based authentication with
    - **Solution**: Terraform automatically handles replacement when container instances are recreated
 
 ### Development Workflow Insights
-1. **Wallet Configuration**: Critical step often missed in deployment guides
-   - **Must download wallet after first Terraform apply**
-   - **All files must be copied to config/ directory**
-   - **Auto-login wallet (no password) works best**
+1. **REST API Configuration**: Ensure correct database endpoint URL
+   - **Check ORDS URL in database Service Console**
+   - **Update DB_BASE_URL in both web app and function code**
+   - **Verify ADMIN password matches Terraform configuration**
 
-2. **JSON Serialization**: Oracle JsonId objects not serializable by Flask
-   - **Solution**: Use `json.loads(json.dumps(data, default=str))` to clean data
+2. **HTTP Request Handling**: REST API responses need proper error handling
+   - **Check HTTP status codes before processing responses**
+   - **Implement timeouts for database requests**
 
-3. **Function vs Web App Consistency**: Both need identical database connection logic
-   - **Keep connection code synchronized between components**
-   - **Use same Oracle client version and configuration**
+3. **Function vs Web App Consistency**: Both need identical database REST API logic
+   - **Keep REST API configuration synchronized between components**
+   - **Use same request patterns and error handling**
 
 ### Oracle Database Best Practices
-1. **Thick Mode for 23ai**: Required for SODA operations on Oracle 23ai
-2. **Explicit Transactions**: Always commit SODA operations explicitly
-3. **Error Handling**: Implement multiple connection fallback methods
-4. **Collection Metadata**: Use string keys for 23ai compatibility
+1. **REST API Usage**: Use ORDS REST API for simplified database access
+2. **HTTP Error Handling**: Always check response status codes for REST calls
+3. **Request Timeout**: Implement reasonable timeouts for HTTP requests
+4. **Authentication**: Use ADMIN user credentials for HTTP Basic Authentication
 
 ---
 
 ## Troubleshooting
 
-### Oracle 23ai Specific Issues
-*   **`ORA-61754: Using JSON type collections...`**: SODA driver incompatible with 23ai
-    - **Solution**: Use thick mode: `oracledb.init_oracle_client()` and `oracledb==2.4.1`
-    - **Alternative**: Downgrade database to 19c if thick mode isn't suitable
+### REST API Specific Issues
+*   **HTTP 401 Unauthorized**: Incorrect database username/password for REST API calls
+    - **Solution**: Verify ADMIN password matches Terraform configuration and ORDS endpoint URL
 
-*   **`'SodaDocument' object has no attribute 'remove'`**: Incorrect SODA deletion method  
-    - **Solution**: Use `collection.find().key(doc.key).remove()` instead of `doc.remove()`
+*   **AI Vision 404 Error**: Function cannot access AI Vision service
+    - **Solution**: Use `resource.type = 'fnfunc'` in Dynamic Group matching rule instead of `resource.type = 'function'`
 
-*   **Documents not actually deleted**: Missing transaction commit
-    - **Solution**: Always call `connection.commit()` after SODA operations
+*   **Collection Not Found**: REST API returns 404 for missing collection
+    - **Solution**: Collection is created automatically on first document insert via REST API
 
 ### Database Connection Issues
-*   **`ORA-01017: invalid credential or not authorized`**: Database wallet files are missing or invalid. Re-download wallet from OCI Console.
-*   **`ORA-28759: failure to open file`**: Wallet file permissions or path issues. Ensure files are copied to `config/` directory.
-*   **`ORA-12154: TNS:could not resolve the connect identifier specified`**: TNS configuration issue. Verify `tnsnames.ora` and `sqlnet.ora` are present.
+*   **HTTP 401 Unauthorized**: Incorrect database username/password. Verify ADMIN password matches Terraform configuration.
+*   **HTTP 404 Not Found**: REST API endpoint URL is incorrect. Check database ORDS URL in OCI Console.
+*   **Connection timeout**: Database REST endpoint not accessible. Verify database is running and ORDS is enabled.
 
 ### Container/Function Issues
-*   **`TypeError: connect() got an unexpected keyword argument 'signer'`**: Old `oracledb` library version. Ensure `requirements.txt` specifies `oracledb==2.4.1`.
+*   **`requests.exceptions.ConnectionError`**: Database REST API not accessible. Check DB_BASE_URL configuration.
 *   **`Container failed to initialize`**: Check container logs for Python errors, missing dependencies, or Docker build issues.
 *   **Function timeout**: Increase function memory allocation or check for infinite loops in code.
 *   **`Function's image architecture 'x86' is incompatible with 'GENERIC_ARM'`**: Use `GENERIC_X86` function shape in Terraform.

@@ -1,272 +1,268 @@
+import base64
 import io
 import json
 import logging
 import oci
-import oracledb
 import os
-import sys
+import requests
 import traceback
+from datetime import datetime
 from fdk import response
-from cryptography.hazmat.primitives import serialization
 
-# --- Thick Mode for SODA Support ---
-# Initialize thick mode for SODA compatibility with Oracle 23ai
-try:
-    # Initialize thick mode with Oracle Instant Client
-    oracledb.init_oracle_client()
-    logging.getLogger().info("Successfully initialized oracledb thick mode for SODA support")
-except Exception as e:
-    logging.getLogger().error(f"Failed to initialize thick mode: {e}")
-    logging.getLogger().info("Note: SODA operations may not be available")
+# Database REST API Configuration
+DB_BASE_URL = "https://g4f1b0a16e960d1-visionjsondb.adb.ca-toronto-1.oraclecloudapps.com/ords/admin/soda/latest"
+DB_COLLECTION = "IMAGE_ANALYSIS"
+DB_USERNAME = "ADMIN"
 
-# Database Configuration
-COLLECTION_NAME = "vision_results"
-
-def get_db_connection(cfg, signer):
-    """Establishes a connection to the Oracle Database using wallet files or Resource Principals."""
-    log = logging.getLogger()
-    wallet_location = "/function/wallet"
-    
-    # First try with actual wallet files
-    if os.path.exists(wallet_location):
-        log.info(f"Found wallet files at {wallet_location}")
-        
-        # Debug: List all files in wallet directory
-        try:
-            wallet_files = os.listdir(wallet_location)
-            log.info(f"Wallet directory contains: {wallet_files}")
-            
-            # Check specific wallet files
-            for wallet_file in ['cwallet.sso', 'ewallet.p12', 'sqlnet.ora', 'tnsnames.ora']:
-                file_path = os.path.join(wallet_location, wallet_file)
-                if os.path.exists(file_path):
-                    stat_info = os.stat(file_path)
-                    log.info(f"{wallet_file}: exists, size={stat_info.st_size}, mode={oct(stat_info.st_mode)}")
-                else:
-                    log.info(f"{wallet_file}: NOT FOUND")
-        except Exception as e:
-            log.error(f"Error listing wallet files: {e}")
-        
-        # Check environment variables
-        log.info(f"TNS_ADMIN={os.environ.get('TNS_ADMIN', 'NOT SET')}")
-        log.info(f"ORACLE_HOME={os.environ.get('ORACLE_HOME', 'NOT SET')}")
-        
-        # Check for database password environment variable
-        db_password = cfg.get("DB_PASSWORD", "")
-        
-        # Debug: Check if we can actually read wallet file contents
-        try:
-            cwallet_path = os.path.join(wallet_location, "cwallet.sso")
-            with open(cwallet_path, 'rb') as f:
-                first_bytes = f.read(10)
-                log.info(f"Successfully read first 10 bytes from cwallet.sso: {first_bytes.hex()}")
-        except Exception as e:
-            log.error(f"Failed to read cwallet.sso file: {e}")
-            
-        try:
-            sqlnet_path = os.path.join(wallet_location, "sqlnet.ora")
-            with open(sqlnet_path, 'r') as f:
-                sqlnet_content = f.read()
-                log.info(f"sqlnet.ora content: {sqlnet_content}")
-        except Exception as e:
-            log.error(f"Failed to read sqlnet.ora file: {e}")
-        
-        connection_attempts = [
-            ("Auto-login wallet authentication", lambda: oracledb.connect(
-                dsn="visionjsondb_medium"  # TNS_ADMIN env var points to wallet location
-            )),
-            ("Wallet with ADMIN user and password", lambda: oracledb.connect(
-                user="ADMIN",
-                password=db_password,
-                dsn="visionjsondb_medium",
-                wallet_location=wallet_location,
-                wallet_password=""
-            )),
-            ("Wallet authentication with location", lambda: oracledb.connect(
-                dsn="visionjsondb_medium",
-                wallet_location=wallet_location,
-                wallet_password=""
-            )),
-            ("Wallet authentication with config_dir", lambda: oracledb.connect(
-                dsn="visionjsondb_medium",
-                config_dir=wallet_location,
-                wallet_location=wallet_location,
-                wallet_password=""
-            )),
-            ("Wallet with explicit ADMIN user (no password)", lambda: oracledb.connect(
-                user="ADMIN",
-                dsn="visionjsondb_medium",
-                wallet_location=wallet_location,
-                wallet_password=""
-            ))
-        ]
-    else:
-        # Fallback to Resource Principals approach
-        dsn = cfg["DB_CONNECTION_STRING"]
-        log.info(f"No wallet found, trying Resource Principals with DSN: {dsn}")
-        connection_attempts = [
-            ("Resource Principals wallet-based", lambda: oracledb.connect(
-                dsn=dsn,
-                config_dir="/dev/null",
-                wallet_location="/dev/null", 
-                wallet_password=""
-            )),
-            ("Basic connection with Resource Principals", lambda: oracledb.connect(dsn=dsn))
-        ]
-    
-    # Try all connection attempts
-    for attempt_name, connection_func in connection_attempts:
-        try:
-            log.info(f"Trying {attempt_name}...")
-            connection = connection_func()
-            log.info(f"Successfully connected using {attempt_name}")
-            return connection
-        except Exception as e:
-            log.info(f"{attempt_name} failed: {e}")
-            continue
-    
-    # If all attempts failed, raise an exception
-    raise Exception("All database connection attempts failed")
-
-def handler(ctx, data: io.BytesIO=None):
+def store_analysis_result_via_rest(image_name, bucket_name, analysis_results, db_password):
+    """Store image analysis results in database via REST API."""
     log = logging.getLogger()
     
     try:
-        log.info("Function execution started.")
-        cfg = ctx.Config()
+        # Prepare the document to store
+        document = {
+            "image_name": image_name,
+            "bucket_name": bucket_name,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "analysis_results": analysis_results
+        }
         
-        signer = oci.auth.signers.get_resource_principals_signer()
-        vision_client = oci.ai_vision.AIServiceVisionClient(config={}, signer=signer)
-        log.info("Successfully initialized OCI Vision client.")
-
-        event_data = data.getvalue()
-        if not event_data:
-            raise ValueError("Input data from FDK was empty.")
-
-        body = json.loads(event_data)
-        log.info("Successfully parsed event data.")
-
-        source_bucket = body["data"]["additionalDetails"]["bucketName"]
-        source_object = body["data"]["resourceName"]
-        namespace = body["data"]["additionalDetails"]["namespace"]
-        compartment_id = body["data"]["compartmentId"]
+        # REST API call to insert document
+        auth = (DB_USERNAME, db_password)
+        headers = {'Content-Type': 'application/json'}
         
-        log.info(f"Processing {source_object} from bucket {source_bucket}.")
-
-        image_details = oci.ai_vision.models.ObjectStorageImageDetails(
-            namespace_name=namespace,
-            bucket_name=source_bucket,
-            object_name=source_object
+        response_req = requests.post(
+            f"{DB_BASE_URL}/{DB_COLLECTION}",
+            auth=auth,
+            headers=headers,
+            json=document,
+            timeout=30
         )
         
-        analyze_image_details = oci.ai_vision.models.AnalyzeImageDetails(
-            features=[oci.ai_vision.models.ImageObjectDetectionFeature()],
-            image=image_details,
-            compartment_id=compartment_id
-        )
-
-        log.info("Calling Vision API...")
-        vision_response = vision_client.analyze_image(analyze_image_details)
-        result_dict = oci.util.to_dict(vision_response.data)
-        log.info(f"Successfully analyzed {source_object}.")
-
-        result_dict['image_name'] = source_object
-
-        log.info("Connecting to the Autonomous JSON Database...")
-        with get_db_connection(cfg, signer) as connection:
-            soda = connection.getSodaDatabase()
+        if response_req.status_code == 201:
+            result = response_req.json()
+            doc_id = result.get('id')
+            log.info(f"Successfully stored analysis result with ID: {doc_id}")
+            return True
+        else:
+            log.error(f"Failed to store analysis result: HTTP {response_req.status_code}")
+            log.error(f"Response: {response_req.text}")
+            return False
             
-            # Try to open existing collection first
-            collection = None
-            try:
-                collection = soda.openCollection(COLLECTION_NAME)
-                if collection:
-                    log.info(f"Using existing SODA collection: {COLLECTION_NAME}")
-            except Exception as e:
-                log.info(f"Could not open existing collection: {e}")
-            
-            # Collection doesn't exist or failed to open, create new one
-            if not collection:
-                try:
-                    # Create collection with string keys for Oracle 23ai compatibility
-                    collection_metadata = {
-                        "keyColumn": {
-                            "name": "ID",
-                            "sqlType": "VARCHAR2",
-                            "maxLength": 255,
-                            "assignmentMethod": "CLIENT"
-                        }
-                    }
-                    collection = soda.createCollection(COLLECTION_NAME, collection_metadata)
-                    log.info(f"Created new SODA collection: {COLLECTION_NAME}")
-                except Exception as create_error:
-                    # If creation fails due to existing collection with different metadata,
-                    # try to drop and recreate
-                    if "ORA-40669" in str(create_error):
-                        try:
-                            log.info(f"Collection exists with different metadata, dropping and recreating...")
-                            existing_collection = soda.openCollection(COLLECTION_NAME)
-                            if existing_collection:
-                                existing_collection.drop()
-                            # Now create with new metadata
-                            collection = soda.createCollection(COLLECTION_NAME, collection_metadata)
-                            log.info(f"Successfully recreated SODA collection: {COLLECTION_NAME}")
-                        except Exception as drop_error:
-                            log.error(f"Failed to drop and recreate collection: {drop_error}")
-                            raise drop_error
-                    else:
-                        raise create_error
-            
-            log.info(f"Inserting analysis for {source_object} into the database.")
-            
-            # Add filename to the document content for easier querying
-            result_dict['filename'] = source_object
-            
-            try:
-                # Try simple insertOne first
-                result = collection.insertOne(result_dict)
-                log.info(f"insertOne result type: {type(result)}")
-                log.info(f"insertOne result: {result}")
-                
-                # Try to get document count to verify insertion
-                doc_count = collection.find().count()
-                log.info(f"Total documents in collection after insert: {doc_count}")
-                
-                # Explicitly commit the transaction
-                connection.commit()
-                log.info("Successfully saved analysis to the database and committed transaction.")
-                
-            except Exception as e:
-                log.error(f"Error inserting document: {e}")
-                # Try alternative approach - insertOneAndGet
-                try:
-                    result = collection.insertOneAndGet(result_dict)
-                    log.info(f"insertOneAndGet result: {result}")
-                    if result and hasattr(result, 'key'):
-                        log.info(f"Successfully saved analysis with key: {result.key}")
-                    else:
-                        log.info("insertOneAndGet succeeded but no key returned")
-                    
-                    # Commit the fallback transaction too
-                    connection.commit()
-                    log.info("Committed fallback transaction.")
-                except Exception as e2:
-                    log.error(f"insertOneAndGet also failed: {e2}")
-                    raise e2
-
-        return response.Response(
-            ctx, 
-            response_data=json.dumps({"status": "Success"}),
-            headers={"Content-Type": "application/json"}
-        )
-
     except Exception as e:
-        error_message = f"Top-level error in function handler: {str(e)}"
-        log.error(error_message)
-        print(error_message, file=sys.stderr)
+        log.error(f"Error storing analysis result via REST: {e}")
+        log.error(traceback.format_exc())
+        return False
+
+def handler(ctx, data: io.BytesIO = None):
+    """
+    OCI Function handler for processing Object Storage events and running AI Vision analysis.
+    """
+    log = logging.getLogger()
+    log.info("Function invoked")
+    
+    try:
+        # Parse the event data
+        body = json.loads(data.getvalue())
+        log.info(f"Event received: {json.dumps(body, indent=2)}")
+        
+        # Extract event information
+        event_type = body.get("eventType", "")
+        if event_type != "com.oraclecloud.objectstorage.createobject":
+            log.info(f"Ignoring event type: {event_type}")
+            return response.Response(
+                ctx, 
+                response_data=json.dumps({"message": "Event ignored"}),
+                headers={"Content-Type": "application/json"}
+            )
+        
+        # Extract object information from event structure
+        data_info = body.get("data", {})
+        additional_details = data_info.get("additionalDetails", {})
+        
+        # Debug: Log the full event structure to understand the format
+        log.info(f"Full event body keys: {list(body.keys())}")
+        log.info(f"data keys: {list(data_info.keys())}")
+        log.info(f"additionalDetails keys: {list(additional_details.keys())}")
+        
+        # Try multiple possible locations for object name
+        object_name = ""
+        possible_names = [
+            additional_details.get("objectName", ""),
+            data_info.get("objectName", ""),
+            data_info.get("resourceName", ""),
+            body.get("resourceName", ""),
+            body.get("objectName", "")
+        ]
+        
+        # Also try parsing from resourceId if it exists
+        resource_id = data_info.get("resourceId", "") or body.get("resourceId", "")
+        if resource_id and not any(possible_names):
+            # resourceId format: /n/namespace/b/bucket/o/objectname
+            parts = resource_id.split("/")
+            if len(parts) >= 6 and parts[4] == "o":
+                possible_names.append(parts[5])
+        
+        # Find the first non-empty name
+        for name in possible_names:
+            if name and name.strip():
+                object_name = name.strip()
+                break
+        
+        bucket_name = additional_details.get("bucketName", "")
+        namespace = additional_details.get("namespace", "")
+        
+        log.info(f"Extracted - Object: '{object_name}', Bucket: '{bucket_name}', Namespace: '{namespace}'")
+        log.info(f"Resource ID: '{resource_id}'")
+        
+        if not object_name or not bucket_name:
+            log.error(f"Missing object name ('{object_name}') or bucket name ('{bucket_name}') in event")
+            log.error(f"Tried these name sources: {possible_names}")
+            return response.Response(
+                ctx,
+                response_data=json.dumps({"error": "Missing object information"}),
+                headers={"Content-Type": "application/json"},
+                status_code=400
+            )
+        
+        # Get database password from function configuration
+        db_password = os.environ.get("DB_PASSWORD", "")
+        if not db_password:
+            log.error("DB_PASSWORD environment variable not set")
+            return response.Response(
+                ctx,
+                response_data=json.dumps({"error": "Database password not configured"}),
+                headers={"Content-Type": "application/json"},
+                status_code=500
+            )
+        
+        # Initialize OCI clients using Resource Principals
+        log.info("Initializing OCI clients...")
+        try:
+            signer = oci.auth.signers.get_resource_principals_signer()
+            config = {'region': signer.region}
+            
+            # Initialize Vision client
+            vision_client = oci.ai_vision.AIServiceVisionClient(config=config, signer=signer)
+            log.info("Vision client initialized")
+            
+            # Initialize Object Storage client
+            object_storage_client = oci.object_storage.ObjectStorageClient(config=config, signer=signer)
+            log.info("Object Storage client initialized")
+            
+        except Exception as e:
+            log.error(f"Failed to initialize OCI clients: {e}")
+            return response.Response(
+                ctx,
+                response_data=json.dumps({"error": "Failed to initialize OCI clients"}),
+                headers={"Content-Type": "application/json"},
+                status_code=500
+            )
+        
+        # Note: We don't need to fetch the image data since we're using Object Storage reference
+        log.info(f"Will analyze object {object_name} from bucket {bucket_name} via Object Storage reference")
+        
+        # Perform image analysis
+        try:
+            log.info("Starting image analysis...")
+            
+            # Create image object detection request using Object Storage reference
+            object_storage_image_details = oci.ai_vision.models.ObjectStorageImageDetails(
+                source="OBJECT_STORAGE",
+                namespace_name=namespace,
+                bucket_name=bucket_name,
+                object_name=object_name
+            )
+            
+            image_object_detection_feature = oci.ai_vision.models.ImageObjectDetectionFeature(
+                feature_type="OBJECT_DETECTION",
+                max_results=10
+            )
+            
+            # Analyze image features  
+            analyze_image_details = oci.ai_vision.models.AnalyzeImageDetails(
+                features=[image_object_detection_feature],
+                image=object_storage_image_details,
+                compartment_id=os.environ.get("TENANCY_OCID", "")
+            )
+            
+            # Call Vision API
+            analyze_image_response = vision_client.analyze_image(analyze_image_details=analyze_image_details)
+            
+            # Process results
+            image_objects = analyze_image_response.data.image_objects
+            
+            analysis_results = {
+                "objects": []
+            }
+            
+            for obj in image_objects:
+                obj_data = {
+                    "name": obj.name,
+                    "confidence": float(obj.confidence),
+                    "bounding_box": {
+                        "left": obj.bounding_polygon.normalized_vertices[0].x,
+                        "top": obj.bounding_polygon.normalized_vertices[0].y,
+                        "width": abs(obj.bounding_polygon.normalized_vertices[2].x - obj.bounding_polygon.normalized_vertices[0].x),
+                        "height": abs(obj.bounding_polygon.normalized_vertices[2].y - obj.bounding_polygon.normalized_vertices[0].y)
+                    }
+                }
+                analysis_results["objects"].append(obj_data)
+            
+            log.info(f"Analysis completed, found {len(analysis_results['objects'])} objects")
+            
+        except Exception as e:
+            log.error(f"Failed to analyze image: {e}")
+            log.error(traceback.format_exc())
+            return response.Response(
+                ctx,
+                response_data=json.dumps({"error": "Failed to analyze image"}),
+                headers={"Content-Type": "application/json"},
+                status_code=500
+            )
+        
+        # Store results in database via REST API
+        try:
+            log.info("Storing analysis results in database...")
+            success = store_analysis_result_via_rest(object_name, bucket_name, analysis_results, db_password)
+            
+            if success:
+                log.info("Analysis results stored successfully")
+                return response.Response(
+                    ctx,
+                    response_data=json.dumps({
+                        "message": "Image analysis completed successfully",
+                        "image_name": object_name,
+                        "bucket_name": bucket_name,
+                        "objects_found": len(analysis_results["objects"])
+                    }),
+                    headers={"Content-Type": "application/json"}
+                )
+            else:
+                log.error("Failed to store analysis results")
+                return response.Response(
+                    ctx,
+                    response_data=json.dumps({"error": "Failed to store analysis results"}),
+                    headers={"Content-Type": "application/json"},
+                    status_code=500
+                )
+                
+        except Exception as e:
+            log.error(f"Error storing results: {e}")
+            log.error(traceback.format_exc())
+            return response.Response(
+                ctx,
+                response_data=json.dumps({"error": "Failed to store analysis results"}),
+                headers={"Content-Type": "application/json"},
+                status_code=500
+            )
+    
+    except Exception as e:
+        log.error(f"Unexpected error in function handler: {e}")
+        log.error(traceback.format_exc())
         return response.Response(
-            ctx, 
-            response_data=json.dumps({"status": "Error", "message": error_message}),
-            status_code=500,
-            headers={"Content-Type": "application/json"}
+            ctx,
+            response_data=json.dumps({"error": "Internal function error"}),
+            headers={"Content-Type": "application/json"},
+            status_code=500
         )

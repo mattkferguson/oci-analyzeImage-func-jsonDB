@@ -1,6 +1,4 @@
-fdk
-oci
-six
-cryptography
-immutables
-oracledb==2.4.1
+fdk>=0.1.66
+oci>=2.126.4
+requests>=2.31.0
+cryptography>=41.0.7

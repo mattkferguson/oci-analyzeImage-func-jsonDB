@@ -1,13 +1,116 @@
 <!doctype html>
-<title>Analysis for {{ filename }}</title>
-<style>
-    body { font-family: sans-serif; margin: 2em; }
-    a { color: #007bff; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    pre { background: #eee; padding: 1em; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; }
-</style>
-<h1>Analysis for <code>{{ filename }}</code></h1>
-<p><a href="{{ url_for('index') }}">&larr; Back to file list</a></p>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analysis Results - {{ filename }}</title>
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            margin: 2em; 
+            background-color: #f8f9fa;
+            line-height: 1.6;
+        }
+        .container { 
+            max-width: 1200px; 
+            margin: 0 auto; 
+            background: white; 
+            padding: 2em; 
+            border-radius: 8px; 
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1); 
+        }
+        .back-button { 
+            display: inline-block;
+            background: #007bff; 
+            color: white; 
+            padding: 0.75em 1.5em; 
+            text-decoration: none; 
+            border-radius: 5px; 
+            margin-bottom: 1.5em;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+        .back-button:hover { 
+            background: #0056b3; 
+            text-decoration: none; 
+        }
+        h1 { 
+            color: #343a40; 
+            border-bottom: 2px solid #007bff; 
+            padding-bottom: 0.5em; 
+            margin-bottom: 1em;
+        }
+        h2 { 
+            color: #495057; 
+            margin-top: 2em; 
+            margin-bottom: 1em;
+        }
+        .filename { 
+            background: #e9ecef; 
+            padding: 0.25em 0.5em; 
+            border-radius: 3px; 
+            font-family: 'Monaco', 'Courier New', monospace; 
+        }
+        .json-container {
+            background: #2d3748;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .json-header {
+            background: #4a5568;
+            color: white;
+            padding: 1em;
+            font-weight: 500;
+            border-bottom: 1px solid #2d3748;
+        }
+        pre { 
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 1.5em; 
+            margin: 0;
+            white-space: pre-wrap; 
+            word-wrap: break-word; 
+            overflow-x: auto;
+            font-family: 'Monaco', 'Consolas', 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        code {
+            color: #e2e8f0;
+        }
+        /* JSON syntax highlighting */
+        .json-string { color: #68d391; }
+        .json-number { color: #fbb6ce; }
+        .json-boolean { color: #63b3ed; }
+        .json-null { color: #a0aec0; }
+        .json-key { color: #81e6d9; }
+        
+        @media (max-width: 768px) {
+            body { margin: 1em; }
+            .container { padding: 1em; }
+            pre { font-size: 12px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="{{ url_for('index') }}" class="back-button">&larr; Back to File List</a>
+        
+        <h1>Analysis Results</h1>
+        <p><strong>File:</strong> <span class="filename">{{ filename }}</span></p>
 
-<h2>Object Detection Results</h2>
-<pre><code>{{ data | tojson(indent=4) }}</code></pre>
+        <h2>Object Detection Results</h2>
+        <div class="json-container">
+            <div class="json-header">
+                Vision AI Analysis Data
+            </div>
+            <pre><code>{{ formatted_json | safe }}</code></pre>
+        </div>
+        
+        <div style="margin-top: 2em; padding-top: 1em; border-top: 1px solid #dee2e6;">
+            <a href="{{ url_for('index') }}" class="back-button">&larr; Back to File List</a>
+        </div>
+    </div>
+</body>
+</html>

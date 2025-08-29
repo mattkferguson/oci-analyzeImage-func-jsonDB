@@ -10,15 +10,96 @@ from datetime import datetime
 from fdk import response
 
 # Database REST API Configuration
-DB_BASE_URL = "https://g4f1b0a16e960d1-visionjsondb.adb.ca-toronto-1.oraclecloudapps.com/ords/admin/soda/latest"
+DB_ORDS_BASE_URL = "https://g4f1b0a16e960d1-visionjsondb.adb.ca-toronto-1.oraclecloudapps.com/ords/"
+DB_SCHEMA = "admin"  # Schema name (lowercase for URL)
+DB_SODA_PATH = f"{DB_SCHEMA}/soda/latest"
+DB_BASE_URL = f"{DB_ORDS_BASE_URL}{DB_SODA_PATH}"
 DB_COLLECTION = "IMAGE_ANALYSIS"
 DB_USERNAME = "ADMIN"
+
+def ensure_collection_exists(db_password):
+    """Ensure the SODA collection exists, create if it doesn't."""
+    log = logging.getLogger()
+    
+    try:
+        auth = (DB_USERNAME, db_password)
+        headers = {'Content-Type': 'application/json'}
+        
+        # Check if collection exists by trying to get it
+        response = requests.get(
+            f"{DB_BASE_URL}/{DB_COLLECTION}",
+            auth=auth,
+            headers=headers,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            log.info(f"Collection {DB_COLLECTION} already exists")
+            return True
+        elif response.status_code == 404:
+            # Collection doesn't exist, create it
+            log.info(f"Collection {DB_COLLECTION} not found, creating...")
+            
+            # Create collection with metadata
+            collection_metadata = {
+                "schemaName": "ADMIN",
+                "tableName": DB_COLLECTION,
+                "keyColumn": {
+                    "name": "ID",
+                    "sqlType": "VARCHAR2",
+                    "maxLength": 255,
+                    "assignmentMethod": "UUID"
+                },
+                "contentColumn": {
+                    "name": "JSON_DOCUMENT",
+                    "sqlType": "BLOB",
+                    "jsonFormat": "OSON"
+                },
+                "versionColumn": {
+                    "name": "VERSION",
+                    "method": "UUID"
+                },
+                "lastModifiedColumn": {
+                    "name": "LAST_MODIFIED"
+                },
+                "creationTimeColumn": {
+                    "name": "CREATED_ON"
+                }
+            }
+            
+            create_response = requests.put(
+                f"{DB_BASE_URL}/{DB_COLLECTION}",
+                auth=auth,
+                headers=headers,
+                json=collection_metadata,
+                timeout=30
+            )
+            
+            if create_response.status_code in [200, 201]:
+                log.info(f"Successfully created collection {DB_COLLECTION}")
+                return True
+            else:
+                log.error(f"Failed to create collection: HTTP {create_response.status_code}")
+                log.error(f"Response: {create_response.text}")
+                return False
+        else:
+            log.error(f"Unexpected response checking collection: HTTP {response.status_code}")
+            return False
+            
+    except Exception as e:
+        log.error(f"Error ensuring collection exists: {e}")
+        return False
 
 def store_analysis_result_via_rest(image_name, bucket_name, analysis_results, db_password):
     """Store image analysis results in database via REST API."""
     log = logging.getLogger()
     
     try:
+        # Ensure collection exists before storing data
+        if not ensure_collection_exists(db_password):
+            log.error("Failed to ensure collection exists")
+            return False
+        
         # Prepare the document to store
         document = {
             "image_name": image_name,

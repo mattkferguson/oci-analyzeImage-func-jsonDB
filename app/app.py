@@ -16,7 +16,10 @@ UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 # Database REST API Configuration
-DB_BASE_URL = "https://g4f1b0a16e960d1-visionjsondb.adb.ca-toronto-1.oraclecloudapps.com/ords/admin/soda/latest"
+DB_ORDS_BASE_URL = "https://g4f1b0a16e960d1-visionjsondb.adb.ca-toronto-1.oraclecloudapps.com/ords/"
+DB_SCHEMA = "admin"  # Schema name (lowercase for URL)
+DB_SODA_PATH = f"{DB_SCHEMA}/soda/latest"
+DB_BASE_URL = f"{DB_ORDS_BASE_URL}{DB_SODA_PATH}"
 DB_COLLECTION = "IMAGE_ANALYSIS"
 DB_USERNAME = "ADMIN"
 DB_PASSWORD = os.environ.get('DB_PASSWORD', '0Racle123456')
@@ -45,9 +48,85 @@ def init_oci_clients():
         print(f"Failed to initialize OCI clients: {e}")
         return False
 
+def ensure_collection_exists():
+    """Ensure the SODA collection exists, create if it doesn't."""
+    try:
+        auth = (DB_USERNAME, DB_PASSWORD)
+        headers = {'Content-Type': 'application/json'}
+        
+        # Check if collection exists by trying to get it
+        response = requests.get(
+            f"{DB_BASE_URL}/{DB_COLLECTION}",
+            auth=auth,
+            headers=headers,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            print(f"Collection {DB_COLLECTION} already exists")
+            return True
+        elif response.status_code == 404:
+            # Collection doesn't exist, create it
+            print(f"Collection {DB_COLLECTION} not found, creating...")
+            
+            # Create collection with metadata
+            collection_metadata = {
+                "schemaName": "ADMIN",
+                "tableName": DB_COLLECTION,
+                "keyColumn": {
+                    "name": "ID",
+                    "sqlType": "VARCHAR2",
+                    "maxLength": 255,
+                    "assignmentMethod": "UUID"
+                },
+                "contentColumn": {
+                    "name": "JSON_DOCUMENT",
+                    "sqlType": "BLOB",
+                    "jsonFormat": "OSON"
+                },
+                "versionColumn": {
+                    "name": "VERSION",
+                    "method": "UUID"
+                },
+                "lastModifiedColumn": {
+                    "name": "LAST_MODIFIED"
+                },
+                "creationTimeColumn": {
+                    "name": "CREATED_ON"
+                }
+            }
+            
+            create_response = requests.put(
+                f"{DB_BASE_URL}/{DB_COLLECTION}",
+                auth=auth,
+                headers=headers,
+                json=collection_metadata,
+                timeout=30
+            )
+            
+            if create_response.status_code in [200, 201]:
+                print(f"Successfully created collection {DB_COLLECTION}")
+                return True
+            else:
+                print(f"Failed to create collection: HTTP {create_response.status_code}")
+                print(f"Response: {create_response.text}")
+                return False
+        else:
+            print(f"Unexpected response checking collection: HTTP {response.status_code}")
+            return False
+            
+    except Exception as e:
+        print(f"Error ensuring collection exists: {e}")
+        return False
+
 def get_analysis_results():
     """Get all image analysis results from database via REST API."""
     try:
+        # Ensure collection exists before querying
+        if not ensure_collection_exists():
+            print("Failed to ensure collection exists")
+            return []
+        
         auth = (DB_USERNAME, DB_PASSWORD)
         headers = {'Content-Type': 'application/json'}
         

@@ -105,17 +105,179 @@ This is a critical step. You must create the correct IAM policies and dynamic gr
 
 The application uses Oracle REST Data Services (ORDS) to access the database using HTTP Basic Authentication.
 
-1.  **Verify Database REST API Endpoint:**
-    *   In the OCI Console, navigate to **Oracle Database** → **Autonomous JSON Database**.
+1.  **Find Your Database ORDS URL:**
+    
+    **Manual Method:**
+    *   In the OCI Console, navigate to **Oracle Database** → **Autonomous Database**.
     *   Find your database (`visionjsondb`) and click on it.
-    *   Click **"Service Console"** then **"Development"**.
-    *   Note the **"RESTful Services"** URL - this should be similar to:
-        `https://[unique-id]-visionjsondb.adb.[region].oraclecloudapps.com/ords/`
+    *   Click the **"Tool configuration"** tab.
+    *   Copy the **"Web Access (ORDS) Public access URL"**.
+    *   This URL should look like: `https://[unique-id]-visionjsondb.adb.[region].oraclecloudapps.com/ords/`
 
 2.  **Update Database Configuration:**
-    *   The application uses the ADMIN user and password configured in Terraform.
-    *   The REST API endpoint is currently hardcoded in the code - you may need to update it for your database instance.
-    *   Look for `DB_BASE_URL` in the REST version files to match your database's ORDS endpoint.
+    
+    **Manual Update:**
+    *   **IMPORTANT**: Update the `DB_ORDS_BASE_URL` in both files to match your database's ORDS endpoint:
+        *   **File 1**: `app/app.py` - Line ~19
+        *   **File 2**: `vision_function/func.py` - Line ~13
+        *   **Value**: Use the exact URL from step 1 above (including trailing slash)
+    
+    **Automated Methods (Alternative Approaches):**
+    
+    ### Option A: Terraform Data Source (Recommended)
+    
+    Add this to your `main.tf` to automatically retrieve the ORDS URL:
+    
+    ```hcl
+    # Get the ORDS URL from the database
+    data "oci_database_autonomous_database" "vision_json_db_data" {
+      autonomous_database_id = oci_database_autonomous_database.vision_json_db.id
+    }
+    
+    locals {
+      # Extract ORDS URL from connection strings
+      ords_url = "${data.oci_database_autonomous_database.vision_json_db_data.connection_urls[0].apex_url}ords/"
+    }
+    
+    # Pass ORDS URL to containers via environment variable
+    # Update your container configurations:
+    ```
+    
+    Then update your container instance and function configurations to include:
+    
+    ```hcl
+    # In container instance environment_variables:
+    DB_ORDS_BASE_URL = local.ords_url
+    
+    # In function config:
+    DB_ORDS_BASE_URL = local.ords_url
+    ```
+    
+    ### Option B: OCI CLI Script
+    
+    Create a script to automatically update the URLs:
+    
+    ```bash
+    #!/bin/bash
+    # get-ords-url.sh
+    
+    # Get the database OCID from Terraform
+    DB_OCID=$(terraform output -raw autonomous_database_id)
+    
+    # Get ORDS URL using OCI CLI
+    ORDS_URL=$(oci db autonomous-database get \
+      --autonomous-database-id "$DB_OCID" \
+      --query 'data."connection-urls"."apex-url"' \
+      --raw-output | sed 's/apex$/ords\//')
+    
+    echo "ORDS URL: $ORDS_URL"
+    
+    # Update the Python files
+    sed -i "s|DB_ORDS_BASE_URL = \".*\"|DB_ORDS_BASE_URL = \"$ORDS_URL\"|" app/app.py
+    sed -i "s|DB_ORDS_BASE_URL = \".*\"|DB_ORDS_BASE_URL = \"$ORDS_URL\"|" vision_function/func.py
+    
+    echo "Updated database URLs in Python files"
+    ```
+    
+    ### Option C: Environment Variable Approach
+    
+    Modify the Python code to read from environment variables:
+    
+    ```python
+    # In both app.py and func.py, replace hardcoded URL with:
+    DB_ORDS_BASE_URL = os.environ.get(
+        'DB_ORDS_BASE_URL', 
+        'https://g4f1b0a16e960d1-visionjsondb.adb.ca-toronto-1.oraclecloudapps.com/ords/'
+    )
+    ```
+    
+    Then set the environment variable in your container configurations.
+    
+    **URL Structure Reference:**
+    ```
+    Base ORDS URL:     https://[unique-id]-visionjsondb.adb.[region].oraclecloudapps.com/ords/
+    SODA Endpoint:     {base-url}admin/soda/latest/
+    Collection URL:    {soda-endpoint}IMAGE_ANALYSIS
+    ```
+
+3.  **Database Collection Setup:**
+    
+    **✅ Automatic Setup (Already Implemented)**
+    
+    The application includes automatic collection creation logic via the `ensure_collection_exists()` function in both the web app and function. The `IMAGE_ANALYSIS` collection will be created automatically when first accessed. **No manual intervention required.**
+    
+    **Alternative Approaches (For Reference Only)**
+    
+    If you prefer different approaches to collection management, here are additional options:
+    
+    ### Option A: Terraform-based Collection Creation
+    
+    Add this resource to your `main.tf` to create the collection during infrastructure deployment:
+    
+    ```hcl
+    resource "null_resource" "create_soda_collection" {
+      provisioner "local-exec" {
+        command = <<-EOT
+          curl -X PUT \
+            -u "ADMIN:${local.db_admin_password}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "schemaName": "ADMIN",
+              "tableName": "IMAGE_ANALYSIS",
+              "keyColumn": {
+                "name": "ID",
+                "sqlType": "VARCHAR2",
+                "maxLength": 255,
+                "assignmentMethod": "UUID"
+              },
+              "contentColumn": {
+                "name": "JSON_DOCUMENT",
+                "sqlType": "BLOB",
+                "jsonFormat": "OSON"
+              }
+            }' \
+            "https://your-database-url/ords/admin/soda/latest/IMAGE_ANALYSIS"
+        EOT
+      }
+      
+      depends_on = [oci_database_autonomous_database.vision_json_db]
+    }
+    ```
+    
+    ### Option B: Manual CLI Creation
+    
+    For one-time manual collection creation:
+    
+    ```bash
+    # Replace with your actual database URL and password
+    curl -X PUT \
+      -u "ADMIN:0Racle123456" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "schemaName": "ADMIN",
+        "tableName": "IMAGE_ANALYSIS",
+        "keyColumn": {
+          "name": "ID",
+          "sqlType": "VARCHAR2", 
+          "maxLength": 255,
+          "assignmentMethod": "UUID"
+        },
+        "contentColumn": {
+          "name": "JSON_DOCUMENT",
+          "sqlType": "BLOB",
+          "jsonFormat": "OSON"
+        }
+      }' \
+      "https://your-database-url/ords/admin/soda/latest/IMAGE_ANALYSIS"
+    ```
+    
+    ### Option C: Database Console Creation
+    
+    You can also create the collection through the Oracle Database Actions console:
+    1. Access Database Actions from your Autonomous Database console
+    2. Navigate to **JSON** section
+    3. Create a new collection named `IMAGE_ANALYSIS`
+    4. Configure with appropriate settings
 
 ---
 

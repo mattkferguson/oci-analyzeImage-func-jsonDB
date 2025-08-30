@@ -589,3 +589,12 @@ This project is for educational/demonstration purposes. When deploying:
 - Review Oracle Cloud pricing and terms of service
 - Ensure compliance with applicable data protection regulations
 - This code is provided as-is without warranty
+
+## Third-Party Licenses
+
+This project uses the following open source packages:
+
+- Oracle Cloud Infrastructure Python SDK: UPL-1.0 / Apache 2.0
+- Flask: BSD-3-Clause
+- Requests: Apache 2.0
+- Other Python dependencies: Various permissive licenses (see requirements.txt)

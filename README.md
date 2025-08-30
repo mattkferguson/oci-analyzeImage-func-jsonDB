@@ -581,3 +581,11 @@ terraform destroy -auto-approve
 ```
 
 **Important**: You must manually delete all objects from the Object Storage bucket before running `terraform destroy`, or the operation will fail.
+
+## Legal Notice
+
+This project is for educational/demonstration purposes. When deploying:
+
+- Review Oracle Cloud pricing and terms of service
+- Ensure compliance with applicable data protection regulations
+- This code is provided as-is without warranty

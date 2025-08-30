@@ -11,7 +11,7 @@ COPY ./app/templates /app/templates
 # Uses Resource Principal authentication - no wallet files needed
 
 # Copy and install REST version requirements
-COPY ./requirements.txt /app/requirements.txt
+COPY ./app/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Make port 5000 available

@@ -85,19 +85,40 @@ This is a critical step. You must create the correct IAM policies and dynamic gr
 
 ---
 
-## Part 2: Deploy Infrastructure
+## Part 2: Configure and Deploy Infrastructure
 
-1.  **Initialize Terraform:**
+1.  **Configure Terraform Variables:**
+    
+    Copy the example variables file and update with your OCI credentials:
+    ```bash
+    cp terraform.tfvars.example terraform.tfvars
+    ```
+    
+    Edit `terraform.tfvars` and provide:
+    - **tenancy_ocid**: From OCI Console → Tenancy Information
+    - **user_ocid**: From OCI Console → User Settings
+    - **fingerprint**: From OCI Console → User Settings → API Keys
+    - **private_key_path**: Path to your OCI API private key file
+    - **region**: Your OCI region (e.g., ca-toronto-1)
+    - **compartment_ocid**: Target compartment for resources
+    
+    Terraform will prompt you for any missing values.
+
+2.  **Initialize Terraform:**
     ```bash
     terraform init -upgrade
     ```
 
-2.  **Apply Terraform (First Time):**
+3.  **Apply Terraform (First Time):**
     ```bash
-    terraform apply -auto-approve
+    terraform apply
     ```
     
-    **Important:** This first deployment will create the Autonomous Database. The applications will connect via REST API using the ADMIN user credentials.
+    **Important:** This deployment will:
+    - Create the Autonomous Database with REST API access
+    - Create OCIR repositories for your container images
+    - Set up complete networking and load balancer infrastructure
+    - Output container build commands and image URLs
 
 ---
 
@@ -281,19 +302,36 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
 
 ---
 
-## Part 4: Set Up Oracle Container Registry (OCIR) and Build Images
+## Part 4: Build and Deploy Container Images
 
-**IMPORTANT:** All container builds must use `--platform=linux/amd64` for Oracle Instant Client compatibility.
+**✅ Automated OCIR Setup:** Terraform has already created the OCIR repositories and generated all the necessary commands for you!
 
-1.  **Create Container Registry Repositories:**
-    *   In the OCI Console, navigate to **Developer Services** → **Container Registry**.
-    *   Click **"Create Repository"** and create two repositories:
-        *   **Repository Name:** `oci-image-upload-app-ajd` (for the web app)
-        *   **Repository Name:** `vision-analyzer-func-ajd` (for the function)
-        *   **Access:** Set to "Public" or "Private" as needed
-    *   Note down your **tenancy namespace** (visible in the repository URLs)
+1.  **Get Container Build Commands:**
+    
+    After running `terraform apply`, get the automated build commands:
+    ```bash
+    # View all build commands
+    terraform output build_commands
+    
+    # Or get specific commands
+    terraform output -json build_commands | jq -r '.app_build'
+    terraform output -json build_commands | jq -r '.function_build'
+    ```
 
-2.  **Generate Auth Token:**
+2.  **OCIR Authentication Setup:**
+    
+    **Option A: Public Repositories (Default - Easier)**
+    ```bash
+    # With make_repositories_public = true, you still need to authenticate to push
+    # but anyone can pull the images
+    ```
+    
+    **Option B: Private Repositories (More Secure)**
+    ```bash
+    # With make_repositories_public = false, authentication required for both push and pull
+    ```
+    
+    **Generate Auth Token (Required for Both Options):**
     *   In the OCI Console, go to **Profile** → **User Settings** → **Auth Tokens**
     *   Click **"Generate Token"** 
     *   **Description:** "OCIR Docker Login"
@@ -301,65 +339,79 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
 
 3.  **Log in to OCIR:**
     ```bash
-    # Replace with your values:
-    # <region-key> = your region (e.g., ord for us-chicago-1, iad for us-ashburn-1)
-    # <tenancy-namespace> = your tenancy namespace from step 1
-    # <username> = your OCI username (e.g., matt.ferguson@oracle.com)
-    # <auth-token> = the token from step 2
+    # Get your tenancy namespace and region key
+    TENANCY_NAMESPACE=$(terraform output -raw tenancy_namespace)
+    REGION_KEY=$(terraform output -raw region_key)
     
-    echo '<your-auth-token>' | podman login <region-key>.ocir.io --username '<tenancy-namespace>/<username>' --password-stdin
+    # Login with your OCI username and auth token
+    echo 'YOUR_AUTH_TOKEN' | podman login ${REGION_KEY}.ocir.io --username "${TENANCY_NAMESPACE}/your.email@domain.com" --password-stdin
     
     # Example:
-    # echo 'A1B2C3...' | podman login ord.ocir.io --username 'idrjq5zs9qgw/matt.ferguson@oracle.com' --password-stdin
+    # echo 'A1B2C3...' | podman login yyz.ocir.io --username 'matferg8320/matt.ferguson@oracle.com' --password-stdin
+    ```
+    
+    **Troubleshooting Login Issues:**
+    ```bash
+    # If you get 403 errors, verify:
+    # 1. Auth token is correct and not expired
+    # 2. Username format is exactly: tenancy_namespace/your_oci_username
+    # 3. You have proper permissions in OCI
+    
+    # Test login
+    podman login ${REGION_KEY}.ocir.io --get-login
     ```
 
-4.  **Build and Push the Web App Image:**
+4.  **Build and Push Images:**
     ```bash
-    # From the project root directory
+    # Build web application
+    $(terraform output -json build_commands | jq -r '.app_build')
+    $(terraform output -json build_commands | jq -r '.app_tag')
+    $(terraform output -json build_commands | jq -r '.app_push')
+    
+    # Build function
+    $(terraform output -json build_commands | jq -r '.function_build')
+    $(terraform output -json build_commands | jq -r '.function_tag')
+    $(terraform output -json build_commands | jq -r '.function_push')
+    ```
+    
+    **Alternative (Manual Commands):**
+    ```bash
+    # Get repository URLs
+    APP_IMAGE_URL=$(terraform output -raw app_image_full_url)
+    FUNCTION_IMAGE_URL=$(terraform output -raw function_image_full_url)
+    
+    # Build and push web app
     podman build --platform=linux/amd64 -t oci-image-upload-app-ajd:latest -f Dockerfile .
-    podman tag oci-image-upload-app-ajd:latest <region-key>.ocir.io/<tenancy-namespace>/oci-image-upload-app-ajd:latest
-    podman push <region-key>.ocir.io/<tenancy-namespace>/oci-image-upload-app-ajd:latest
+    podman tag oci-image-upload-app-ajd:latest $APP_IMAGE_URL
+    podman push $APP_IMAGE_URL
     
-    # Example:
-    # podman tag oci-image-upload-app-ajd:latest ord.ocir.io/idrjq5zs9qgw/oci-image-upload-app-ajd:latest
-    # podman push ord.ocir.io/idrjq5zs9qgw/oci-image-upload-app-ajd:latest
-    ```
-
-5.  **Build and Push the Function Image:**
-    ```bash
-    # From the project root directory  
+    # Build and push function
     podman build --platform=linux/amd64 -t vision-analyzer-func-ajd:latest -f vision_function/Dockerfile .
-    podman tag vision-analyzer-func-ajd:latest <region-key>.ocir.io/<tenancy-namespace>/vision-analyzer-func-ajd:latest
-    podman push <region-key>.ocir.io/<tenancy-namespace>/vision-analyzer-func-ajd:latest
-    
-    # Example:
-    # podman tag vision-analyzer-func-ajd:latest ord.ocir.io/idrjq5zs9qgw/vision-analyzer-func-ajd:latest
-    # podman push ord.ocir.io/idrjq5zs9qgw/vision-analyzer-func-ajd:latest
-    ```
-
-6.  **Update terraform.tfvars with Your Image URLs:**
-    ```bash
-    # Update terraform.tfvars with your actual image URLs:
-    app_image_url      = "<region-key>.ocir.io/<tenancy-namespace>/oci-image-upload-app-ajd:latest"
-    function_image_url = "<region-key>.ocir.io/<tenancy-namespace>/vision-analyzer-func-ajd:latest"
+    podman tag vision-analyzer-func-ajd:latest $FUNCTION_IMAGE_URL
+    podman push $FUNCTION_IMAGE_URL
     ```
 
 ---
 
 ## Part 5: Final Deployment
 
-After pushing images to OCIR, update your infrastructure:
+After pushing images to OCIR, the infrastructure will automatically use them:
 
-1.  **Apply Terraform Again:**
+1.  **Verify Deployment:**
     ```bash
-    terraform apply -auto-approve
+    # Check deployment status
+    terraform output deployment_summary
+    
+    # Get application URL
+    terraform output application_url
     ```
-    This will update the container instances and function with the new images.
 
-2.  **Verify Deployment:**
+2.  **Test the Application:**
+    *   Navigate to the application URL from the output above
+    *   Upload an image to test the complete pipeline
     *   Check container instance logs for successful OCI client initialization
     *   Check function logs for successful execution when images are uploaded
-    *   Test the REST API endpoints to ensure database connectivity
+    *   Verify database collection creation and data storage
 
 ---
 

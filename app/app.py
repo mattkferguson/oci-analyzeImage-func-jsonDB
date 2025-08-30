@@ -50,17 +50,27 @@ def init_oci_clients():
 
 def ensure_collection_exists():
     """Ensure the SODA collection exists, create if it doesn't."""
+    print(f"DEBUG: Checking/creating collection {DB_COLLECTION}")
+    print(f"DEBUG: Database URL: {DB_BASE_URL}")
+    print(f"DEBUG: Full collection URL: {DB_BASE_URL}/{DB_COLLECTION}")
+    print(f"DEBUG: Using credentials: {DB_USERNAME} / {'*' * len(DB_PASSWORD)}")
+    
     try:
         auth = (DB_USERNAME, DB_PASSWORD)
         headers = {'Content-Type': 'application/json'}
         
+        # Test basic connectivity first
+        base_response = requests.get(DB_BASE_URL, auth=auth, headers=headers, timeout=30)
+        print(f"DEBUG: Base URL test - Status: {base_response.status_code}")
+        if base_response.status_code != 200:
+            print(f"DEBUG: Base URL response: {base_response.text[:200]}...")
+        
         # Check if collection exists by trying to get it
-        response = requests.get(
-            f"{DB_BASE_URL}/{DB_COLLECTION}",
-            auth=auth,
-            headers=headers,
-            timeout=30
-        )
+        collection_url = f"{DB_BASE_URL}/{DB_COLLECTION}"
+        print(f"DEBUG: Checking collection at: {collection_url}")
+        
+        response = requests.get(collection_url, auth=auth, headers=headers, timeout=30)
+        print(f"DEBUG: Collection check response: {response.status_code}")
         
         if response.status_code == 200:
             print(f"Collection {DB_COLLECTION} already exists")
@@ -96,13 +106,18 @@ def ensure_collection_exists():
                 }
             }
             
+            print(f"DEBUG: Creating collection with metadata: {json.dumps(collection_metadata, indent=2)}")
+            
             create_response = requests.put(
-                f"{DB_BASE_URL}/{DB_COLLECTION}",
+                collection_url,
                 auth=auth,
                 headers=headers,
                 json=collection_metadata,
                 timeout=30
             )
+            
+            print(f"DEBUG: Create response status: {create_response.status_code}")
+            print(f"DEBUG: Create response body: {create_response.text}")
             
             if create_response.status_code in [200, 201]:
                 print(f"Successfully created collection {DB_COLLECTION}")
@@ -113,10 +128,13 @@ def ensure_collection_exists():
                 return False
         else:
             print(f"Unexpected response checking collection: HTTP {response.status_code}")
+            print(f"Response body: {response.text[:200]}...")
             return False
             
     except Exception as e:
         print(f"Error ensuring collection exists: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def get_analysis_results():

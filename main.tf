@@ -16,32 +16,84 @@ terraform {
 }
 
 provider "oci" {
-  tenancy_ocid     = "ocid1.tenancy.oc1..aaaaaaaarvotah7kpkn7ypk5bvsxsag2cq37e7d6osue7prcytzc7rlc4ibq"
-  user_ocid        = "ocid1.user.oc1..aaaaaaaan3tdeoabrtzff5jtkg3b3mqw6nvuv2ine4hthphvs5ewadepzyjq"
-  fingerprint      = "a7:ac:14:57:04:6f:16:83:d3:95:23:43:00:db:94:10"
-  private_key_path = "/Users/matfergu/.oci/matt.ferguson@oracle.com-2025-08-25T20_22_04.101Z.pem"
-  region           = "ca-toronto-1"
+  tenancy_ocid     = var.tenancy_ocid
+  user_ocid        = var.user_ocid
+  fingerprint      = var.fingerprint
+  private_key_path = var.private_key_path
+  region           = var.region
 }
 
+# OCI Provider Configuration Variables
 variable "tenancy_ocid" {
-  description = "The OCID of your tenancy."
+  description = "The OCID of your tenancy (from OCI Console -> Tenancy Information)"
   type        = string
+  validation {
+    condition     = can(regex("^ocid1\\.tenancy\\.oc1\\.\\..*", var.tenancy_ocid))
+    error_message = "The tenancy_ocid must be a valid OCI tenancy OCID starting with 'ocid1.tenancy.oc1..'."
+  }
+}
+
+variable "user_ocid" {
+  description = "The OCID of your OCI user (from OCI Console -> User Settings)"
+  type        = string
+  validation {
+    condition     = can(regex("^ocid1\\.user\\.oc1\\.\\..*", var.user_ocid))
+    error_message = "The user_ocid must be a valid OCI user OCID starting with 'ocid1.user.oc1..'."
+  }
+}
+
+variable "fingerprint" {
+  description = "The fingerprint of your OCI API key (from OCI Console -> User Settings -> API Keys)"
+  type        = string
+  validation {
+    condition     = can(regex("^[0-9a-f]{2}(:[0-9a-f]{2}){15}$", var.fingerprint))
+    error_message = "The fingerprint must be in the format xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx."
+  }
+}
+
+variable "private_key_path" {
+  description = "The path to your OCI private key file (e.g., ~/.oci/oci_api_key.pem)"
+  type        = string
+}
+
+variable "region" {
+  description = "The OCI region to deploy resources in (e.g., us-ashburn-1, ca-toronto-1)"
+  type        = string
+  default     = "ca-toronto-1"
 }
 
 variable "compartment_ocid" {
-  description = "The OCID of the compartment to deploy resources into."
+  description = "The OCID of the compartment to deploy resources into"
   type        = string
+  validation {
+    condition     = can(regex("^ocid1\\.compartment\\.oc1\\.\\..*", var.compartment_ocid))
+    error_message = "The compartment_ocid must be a valid OCI compartment OCID starting with 'ocid1.compartment.oc1..'."
+  }
 }
 
 
 variable "app_image_url" {
-  description = "The full URL of the web app Docker image in OCIR."
-  default     = "yyz.ocir.io/idrjq5zs9qgw/oci-image-upload-app-ajd:rest"
+  description = "The full URL of the web app Docker image in OCIR (leave empty to auto-generate)"
+  type        = string
+  default     = ""
 }
 
 variable "function_image_url" {
-  description = "The full URL of the function Docker image in OCIR."
-  default     = "yyz.ocir.io/idrjq5zs9qgw/vision-analyzer-func-ajd:rest-fixed"
+  description = "The full URL of the function Docker image in OCIR (leave empty to auto-generate)"
+  type        = string
+  default     = ""
+}
+
+variable "use_placeholder_images" {
+  description = "Use placeholder images for initial deployment (set to false after pushing real images)"
+  type        = bool
+  default     = true
+}
+
+variable "make_repositories_public" {
+  description = "Make OCIR repositories public (true) or private (false)"
+  type        = bool
+  default     = true
 }
 
 variable "bucket_name" {
@@ -70,6 +122,59 @@ locals {
     for service in data.oci_core_services.all_services.services : service
     if strcontains(lower(service.name), "all") && strcontains(lower(service.name), "oracle") && strcontains(lower(service.name), "services")
   ]
+  
+  # OCIR configuration - map region to region key
+  region_key = (
+    split("-", var.region)[0] == "us" ? substr(var.region, 0, 3) :
+    split("-", var.region)[0] == "ca" ? "yyz" :
+    split("-", var.region)[0] == "uk" ? "lhr" :
+    split("-", var.region)[0] == "eu" ? substr(var.region, 0, 3) :
+    split("-", var.region)[0] == "ap" ? substr(var.region, 0, 3) :
+    substr(var.region, 0, 3)
+  )
+  
+  tenancy_namespace = data.oci_objectstorage_namespace.ns.namespace
+  ocir_base_url = "${local.region_key}.ocir.io/${local.tenancy_namespace}"
+  
+  # Image configuration
+  app_image_name = "oci-image-upload-app-ajd"
+  function_image_name = "vision-analyzer-func-ajd"
+  app_image_tag = "latest"
+  function_image_tag = "latest"
+  
+  # Determine which images to use
+  app_image_url = var.use_placeholder_images ? "busybox:latest" : (
+    var.app_image_url != "" ? var.app_image_url : "${local.ocir_base_url}/${local.app_image_name}:${local.app_image_tag}"
+  )
+  
+  function_image_url = var.use_placeholder_images ? "busybox:latest" : (
+    var.function_image_url != "" ? var.function_image_url : "${local.ocir_base_url}/${local.function_image_name}:${local.function_image_tag}"
+  )
+}
+
+# ---------------------------------------------------------------------------
+# Oracle Container Image Registry (OCIR) Repositories
+# ---------------------------------------------------------------------------
+resource "oci_artifacts_container_repository" "app_repository" {
+  compartment_id   = var.compartment_ocid
+  display_name     = local.app_image_name
+  is_immutable     = false
+  is_public        = var.make_repositories_public
+  readme {
+    content = "Web application for OCI Vision AI image analysis"
+    format  = "text/plain"
+  }
+}
+
+resource "oci_artifacts_container_repository" "function_repository" {
+  compartment_id   = var.compartment_ocid
+  display_name     = local.function_image_name
+  is_immutable     = false
+  is_public        = var.make_repositories_public
+  readme {
+    content = "OCI Function for AI Vision image processing"
+    format  = "text/plain"
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -228,9 +333,10 @@ resource "oci_functions_application" "vision_app" {
 }
 
 resource "oci_functions_function" "vision_function" {
+  count                 = var.use_placeholder_images ? 0 : 1
   application_id        = oci_functions_application.vision_app.id
   display_name          = "vision-analyzer-func-ajd"
-  image                 = var.function_image_url
+  image                 = local.function_image_url
   memory_in_mbs         = 512
   timeout_in_seconds    = 300
   config = {
@@ -239,12 +345,15 @@ resource "oci_functions_function" "vision_function" {
     THICK_MODE_UPDATE   = "2025-08-06-x86-fix"
     TENANCY_OCID        = var.tenancy_ocid
   }
+  
+  depends_on = [oci_artifacts_container_repository.function_repository]
 }
 
 # ---------------------------------------------------------------------------
 # Event Rule to Trigger Function
 # ---------------------------------------------------------------------------
 resource "oci_events_rule" "image_upload_event_rule" {
+  count          = var.use_placeholder_images ? 0 : 1
   compartment_id = var.compartment_ocid
   display_name   = "image-upload-trigger"
   is_enabled     = true
@@ -259,7 +368,7 @@ resource "oci_events_rule" "image_upload_event_rule" {
   actions {
     actions {
       action_type = "FAAS"
-      function_id = oci_functions_function.vision_function.id
+      function_id = oci_functions_function.vision_function[0].id
       is_enabled  = true
     }
   }
@@ -278,8 +387,8 @@ resource "oci_container_instances_container_instance" "oci_image_app_instance" {
     ocpus         = 1
   }
   containers {
-    image_url = var.app_image_url
-    environment_variables = {
+    image_url = local.app_image_url
+    environment_variables = var.use_placeholder_images ? {} : {
       DB_CONNECTION_STRING = oci_database_autonomous_database.vision_json_db.connection_strings[0].profiles[2].value # LOW TNS
       DB_PASSWORD         = local.db_admin_password
       THICK_MODE_UPDATE   = "2025-08-06-x86-fix"
@@ -289,6 +398,8 @@ resource "oci_container_instances_container_instance" "oci_image_app_instance" {
     subnet_id             = oci_core_subnet.private_subnet.id
     is_public_ip_assigned = false
   }
+  
+  depends_on = [oci_artifacts_container_repository.app_repository]
 }
 
 # ---------------------------------------------------------------------------
@@ -352,4 +463,84 @@ output "db_admin_password" {
   description = "The admin password for the Autonomous Database."
   value       = local.db_admin_password
   sensitive   = true
+}
+
+# OCIR and Container Build Information
+output "tenancy_namespace" {
+  description = "The tenancy namespace for OCIR repositories"
+  value       = local.tenancy_namespace
+}
+
+output "region_key" {
+  description = "The region key for OCIR URLs"
+  value       = local.region_key
+}
+
+output "ocir_base_url" {
+  description = "The base OCIR URL for this tenancy"
+  value       = local.ocir_base_url
+}
+
+output "app_image_repository_url" {
+  description = "Full OCIR URL for the web application image"
+  value       = "${local.ocir_base_url}/${local.app_image_name}"
+}
+
+output "function_image_repository_url" {
+  description = "Full OCIR URL for the function image"
+  value       = "${local.ocir_base_url}/${local.function_image_name}"
+}
+
+output "app_image_full_url" {
+  description = "Complete image URL with tag for the web application"
+  value       = "${local.ocir_base_url}/${local.app_image_name}:${local.app_image_tag}"
+}
+
+output "function_image_full_url" {
+  description = "Complete image URL with tag for the function"
+  value       = "${local.ocir_base_url}/${local.function_image_name}:${local.function_image_tag}"
+}
+
+# Container Build Commands
+output "build_commands" {
+  description = "Podman/Docker commands to build and push images"
+  value = {
+    app_build = "podman build --platform=linux/amd64 -t ${local.app_image_name}:${local.app_image_tag} -f Dockerfile ."
+    app_tag = "podman tag ${local.app_image_name}:${local.app_image_tag} ${local.ocir_base_url}/${local.app_image_name}:${local.app_image_tag}"
+    app_push = "podman push ${local.ocir_base_url}/${local.app_image_name}:${local.app_image_tag}"
+    
+    function_build = "podman build --platform=linux/amd64 -t ${local.function_image_name}:${local.function_image_tag} -f vision_function/Dockerfile ."
+    function_tag = "podman tag ${local.function_image_name}:${local.function_image_tag} ${local.ocir_base_url}/${local.function_image_name}:${local.function_image_tag}"
+    function_push = "podman push ${local.ocir_base_url}/${local.function_image_name}:${local.function_image_tag}"
+    
+    login = "echo 'YOUR_AUTH_TOKEN' | podman login ${local.region_key}.ocir.io --username '${local.tenancy_namespace}/YOUR_USERNAME' --password-stdin"
+  }
+}
+
+output "database_info" {
+  description = "Database connection information"
+  value = {
+    db_name = oci_database_autonomous_database.vision_json_db.db_name
+    connection_strings = oci_database_autonomous_database.vision_json_db.connection_strings[0]
+    service_console_url = oci_database_autonomous_database.vision_json_db.service_console_url
+    # Extract ORDS URL from connection strings
+    ords_url = replace(oci_database_autonomous_database.vision_json_db.connection_strings[0].profiles[0].value, "jdbc:oracle:thin:@", "")
+  }
+}
+
+output "deployment_summary" {
+  description = "Summary of key deployment information"
+  value = {
+    application_url = "http://${oci_load_balancer_load_balancer.app_lb.ip_address_details[0].ip_address}"
+    tenancy_namespace = local.tenancy_namespace
+    region_key = local.region_key
+    app_repository = oci_artifacts_container_repository.app_repository.display_name
+    function_repository = oci_artifacts_container_repository.function_repository.display_name
+    database_name = oci_database_autonomous_database.vision_json_db.db_name
+    next_steps = [
+      "1. Update database URLs in app.py and func.py with correct ORDS endpoint",
+      "2. Use the build_commands output to build and push your container images", 
+      "3. Run terraform apply again to deploy with the new images"
+    ]
+  }
 }

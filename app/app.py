@@ -24,8 +24,8 @@ DB_SCHEMA = "admin"  # Schema name (lowercase for URL)
 DB_SODA_PATH = f"{DB_SCHEMA}/soda/latest"
 DB_BASE_URL = f"{DB_ORDS_BASE_URL}{DB_SODA_PATH}"
 DB_COLLECTION = "IMAGE_ANALYSIS"
-DB_USERNAME = os.environ.get('DB_USERNAME', 'ADMIN')
-DB_PASSWORD = os.environ.get('DB_PASSWORD', '0Racle123456')
+DB_USERNAME = os.environ.get('DB_USERNAME')
+DB_PASSWORD = os.environ.get('DB_PASSWORD')
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 if not os.path.exists(UPLOAD_FOLDER):
@@ -108,7 +108,13 @@ def ensure_collection_exists():
     print(f"DEBUG: Checking/creating collection {DB_COLLECTION}")
     print(f"DEBUG: Database URL: {DB_BASE_URL}")
     print(f"DEBUG: Full collection URL: {DB_BASE_URL}/{DB_COLLECTION}")
-    print(f"DEBUG: Using credentials: {DB_USERNAME} / {'*' * len(DB_PASSWORD)}")
+    masked_pw = ('*' * len(DB_PASSWORD)) if DB_PASSWORD else '(not set)'
+    print(f"DEBUG: Using credentials: {DB_USERNAME or '(not set)'} / {masked_pw}")
+
+    # If credentials are not set, skip attempting DB operations
+    if not DB_USERNAME or not DB_PASSWORD:
+        print("DEBUG: DB credentials not set; skipping collection check/creation.")
+        return False
     
     try:
         auth = (DB_USERNAME, DB_PASSWORD)
@@ -195,6 +201,9 @@ def ensure_collection_exists():
 def get_analysis_results():
     """Get all image analysis results from database via REST API."""
     try:
+        if not DB_USERNAME or not DB_PASSWORD:
+            print("DEBUG: DB credentials not set; returning empty analysis results.")
+            return []
         # Ensure collection exists before querying
         if not ensure_collection_exists():
             print("Failed to ensure collection exists")
@@ -263,6 +272,10 @@ def allowed_file(filename):
 @app.route('/')
 def index():
     """Display the main page with upload form and results."""
+    # Warn if DB credentials are not configured
+    if not DB_USERNAME or not DB_PASSWORD:
+        flash('Database credentials are not configured; analysis results will be unavailable until set via Vault or env.', 'warning')
+
     # Get all images from bucket
     images = get_bucket_images()
     
@@ -341,6 +354,9 @@ def view_result(image_filename):
 def delete_analysis_by_filename(filename):
     """Delete analysis results from database by filename via REST API."""
     try:
+        if not DB_USERNAME or not DB_PASSWORD:
+            print("DEBUG: DB credentials not set; skipping DB deletion.")
+            return 0
         # First, get all documents to find the one with matching filename
         auth = (DB_USERNAME, DB_PASSWORD)
         headers = {'Content-Type': 'application/json'}

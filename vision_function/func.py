@@ -18,8 +18,8 @@ DB_SCHEMA = "admin"  # Schema name (lowercase for URL)
 DB_SODA_PATH = f"{DB_SCHEMA}/soda/latest"
 DB_BASE_URL = f"{DB_ORDS_BASE_URL}{DB_SODA_PATH}"
 DB_COLLECTION = "IMAGE_ANALYSIS"
-DB_USERNAME = os.environ.get("DB_USERNAME", "ADMIN")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
+DB_USERNAME = os.environ.get("DB_USERNAME")
+DB_PASSWORD = os.environ.get("DB_PASSWORD")
 secrets_client = None
 signer = None
 
@@ -263,11 +263,12 @@ def handler(ctx, data: io.BytesIO = None):
         # Load database credentials from Vault if available
         load_db_config_from_vault_if_available()
         db_password = DB_PASSWORD
-        if not db_password:
-            log.error("Database password not configured (Vault/env)")
+        db_username = DB_USERNAME
+        if not db_username or not db_password:
+            log.error("Database credentials not configured (Vault/env)")
             return response.Response(
                 ctx,
-                response_data=json.dumps({"error": "Database password not configured"}),
+                response_data=json.dumps({"error": "Database credentials not configured"}),
                 headers={"Content-Type": "application/json"},
                 status_code=500
             )

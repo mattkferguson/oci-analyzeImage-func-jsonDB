@@ -323,6 +323,58 @@ locals {
 }
 
 # ---------------------------------------------------------------------------
+# Vault, Key Management, and Secrets (for ORDS credentials)
+# ---------------------------------------------------------------------------
+resource "oci_kms_vault" "vision_vault" {
+  compartment_id = var.compartment_ocid
+  display_name   = "vision-app-vault"
+  vault_type     = "DEFAULT"
+}
+
+resource "oci_kms_key" "vision_vault_key" {
+  compartment_id      = var.compartment_ocid
+  display_name        = "vision-app-vault-key"
+  # AES-256 symmetric key
+  key_shape {
+    algorithm = "AES"
+    length    = 32
+  }
+  management_endpoint = oci_kms_vault.vision_vault.management_endpoint
+}
+
+# Secret for ORDS DB password
+resource "oci_vault_secret" "db_password_secret" {
+  compartment_id = var.compartment_ocid
+  secret_name    = "db_password"
+  description    = "ORDS database password (ADMIN or least-privileged user)"
+  vault_id       = oci_kms_vault.vision_vault.id
+  key_id         = oci_kms_key.vision_vault_key.id
+
+  secret_content {
+    content_type = "BASE64"
+    name         = "current"
+    stage        = "CURRENT"
+    content      = base64encode(local.db_admin_password)
+  }
+}
+
+# Secret for ORDS DB username (defaults to ADMIN)
+resource "oci_vault_secret" "db_username_secret" {
+  compartment_id = var.compartment_ocid
+  secret_name    = "db_username"
+  description    = "ORDS database username (prefer least-privileged over ADMIN)"
+  vault_id       = oci_kms_vault.vision_vault.id
+  key_id         = oci_kms_key.vision_vault_key.id
+
+  secret_content {
+    content_type = "BASE64"
+    name         = "current"
+    stage        = "CURRENT"
+    content      = base64encode("ADMIN")
+  }
+}
+
+# ---------------------------------------------------------------------------
 # OCI Function
 # ---------------------------------------------------------------------------
 resource "oci_functions_application" "vision_app" {
@@ -340,10 +392,12 @@ resource "oci_functions_function" "vision_function" {
   memory_in_mbs         = 512
   timeout_in_seconds    = 300
   config = {
-    DB_CONNECTION_STRING = oci_database_autonomous_database.vision_json_db.connection_strings[0].profiles[2].value # LOW TNS
-    DB_PASSWORD         = local.db_admin_password
-    THICK_MODE_UPDATE   = "2025-08-06-x86-fix"
-    TENANCY_OCID        = var.tenancy_ocid
+    DB_CONNECTION_STRING    = oci_database_autonomous_database.vision_json_db.connection_strings[0].profiles[2].value # LOW TNS
+    THICK_MODE_UPDATE       = "2025-08-06-x86-fix"
+    TENANCY_OCID            = var.tenancy_ocid
+    # Provide secret OCIDs so the function can fetch from OCI Vault
+    DB_PASSWORD_SECRET_OCID = oci_vault_secret.db_password_secret.id
+    DB_USERNAME_SECRET_OCID = oci_vault_secret.db_username_secret.id
   }
   
   depends_on = [oci_artifacts_container_repository.function_repository]
@@ -389,9 +443,14 @@ resource "oci_container_instances_container_instance" "oci_image_app_instance" {
   containers {
     image_url = local.app_image_url
     environment_variables = var.use_placeholder_images ? {} : {
-      DB_CONNECTION_STRING = oci_database_autonomous_database.vision_json_db.connection_strings[0].profiles[2].value # LOW TNS
-      DB_PASSWORD         = local.db_admin_password
-      THICK_MODE_UPDATE   = "2025-08-06-x86-fix"
+      # Keep for backward compatibility; app ignores these when secrets are present
+      DB_CONNECTION_STRING     = oci_database_autonomous_database.vision_json_db.connection_strings[0].profiles[2].value # LOW TNS
+      THICK_MODE_UPDATE        = "2025-08-06-x86-fix"
+      # Secret OCIDs for app to fetch via Resource Principals + Secrets service
+      DB_PASSWORD_SECRET_OCID  = oci_vault_secret.db_password_secret.id
+      DB_USERNAME_SECRET_OCID  = oci_vault_secret.db_username_secret.id
+      # Optional: provide DB_ORDS_URL_SECRET_OCID if you store ORDS base URL as a secret
+      # DB_ORDS_URL_SECRET_OCID = oci_secrets_secret.db_ords_url_secret.id
     }
   }
   vnics {
@@ -543,4 +602,21 @@ output "deployment_summary" {
       "3. Run terraform apply again to deploy with the new images"
     ]
   }
+}
+
+# Secrets and Vault outputs (for reference and wiring)
+output "vault_id" {
+  description = "OCI Vault OCID used for storing secrets"
+  value       = oci_kms_vault.vision_vault.id
+}
+
+output "db_password_secret_ocid" {
+  description = "OCID of the secret holding the ORDS DB password"
+  value       = oci_vault_secret.db_password_secret.id
+  sensitive   = true
+}
+
+output "db_username_secret_ocid" {
+  description = "OCID of the secret holding the ORDS DB username"
+  value       = oci_vault_secret.db_username_secret.id
 }

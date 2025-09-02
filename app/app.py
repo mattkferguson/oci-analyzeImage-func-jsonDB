@@ -15,14 +15,17 @@ BUCKET_NAME = "oci-image-analysis-bucket"
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
-# Database REST API Configuration
-DB_ORDS_BASE_URL = "https://g4f1b0a16e960d1-visionjsondb.adb.ca-toronto-1.oraclecloudapps.com/ords/"
+# Database REST API Configuration (defaults; may be overridden via Vault)
+DB_ORDS_BASE_URL = os.environ.get(
+    'DB_ORDS_BASE_URL',
+    "https://g4f1b0a16e960d1-visionjsondb.adb.ca-toronto-1.oraclecloudapps.com/ords/"
+)
 DB_SCHEMA = "admin"  # Schema name (lowercase for URL)
 DB_SODA_PATH = f"{DB_SCHEMA}/soda/latest"
 DB_BASE_URL = f"{DB_ORDS_BASE_URL}{DB_SODA_PATH}"
 DB_COLLECTION = "IMAGE_ANALYSIS"
-DB_USERNAME = "ADMIN"
-DB_PASSWORD = os.environ.get('DB_PASSWORD', '0Racle123456')
+DB_USERNAME = os.environ.get('DB_USERNAME')
+DB_PASSWORD = os.environ.get('DB_PASSWORD')
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 if not os.path.exists(UPLOAD_FOLDER):
@@ -32,6 +35,58 @@ if not os.path.exists(UPLOAD_FOLDER):
 signer = None
 object_storage_client = None
 namespace = None
+secrets_client = None
+
+def _fetch_secret_from_vault(secret_ocid):
+    """Fetch and decode a secret value from OCI Vault using Resource Principals.
+    Returns the decoded UTF-8 string, or None on failure.
+    """
+    global secrets_client, signer
+    try:
+        if not signer:
+            signer = oci.auth.signers.get_resource_principals_signer()
+        if not secrets_client:
+            # Use the signer region for Secrets service
+            secrets_client = oci.secrets.SecretsClient(config={'region': signer.region}, signer=signer)
+        resp = secrets_client.get_secret_bundle(secret_id=secret_ocid)
+        # Content is base64-encoded for BASE64 content type
+        content_b64 = resp.data.secret_bundle_content.content
+        return base64.b64decode(content_b64).decode('utf-8')
+    except Exception as e:
+        print(f"Failed to fetch secret {secret_ocid} from Vault: {e}")
+        return None
+
+def load_db_config_from_vault_if_available():
+    """Load DB_ORDS_BASE_URL, DB_USERNAME, DB_PASSWORD from OCI Vault if OCIDs are provided.
+    Falls back to environment/defaults if secrets are not available.
+    """
+    global DB_ORDS_BASE_URL, DB_USERNAME, DB_PASSWORD, DB_BASE_URL
+    pw_secret_id = os.environ.get('DB_PASSWORD_SECRET_OCID')
+    user_secret_id = os.environ.get('DB_USERNAME_SECRET_OCID')
+    ords_url_secret_id = os.environ.get('DB_ORDS_URL_SECRET_OCID')
+
+    if not any([pw_secret_id, user_secret_id, ords_url_secret_id]):
+        print("No Vault secret OCIDs provided; using env/default DB config.")
+        return
+
+    print("Attempting to load DB config from OCI Vault via Resource Principals...")
+    if user_secret_id:
+        v = _fetch_secret_from_vault(user_secret_id)
+        if v:
+            DB_USERNAME = v.strip()
+            print("Loaded DB_USERNAME from Vault.")
+    if pw_secret_id:
+        v = _fetch_secret_from_vault(pw_secret_id)
+        if v:
+            DB_PASSWORD = v
+            print("Loaded DB_PASSWORD from Vault.")
+    if ords_url_secret_id:
+        v = _fetch_secret_from_vault(ords_url_secret_id)
+        if v:
+            DB_ORDS_BASE_URL = v.strip()
+            print("Loaded DB_ORDS_BASE_URL from Vault.")
+    # Recompute DB_BASE_URL if base changes
+    DB_BASE_URL = f"{DB_ORDS_BASE_URL}{DB_SODA_PATH}"
 
 def init_oci_clients():
     """Initialize OCI clients for Object Storage."""
@@ -53,7 +108,13 @@ def ensure_collection_exists():
     print(f"DEBUG: Checking/creating collection {DB_COLLECTION}")
     print(f"DEBUG: Database URL: {DB_BASE_URL}")
     print(f"DEBUG: Full collection URL: {DB_BASE_URL}/{DB_COLLECTION}")
-    print(f"DEBUG: Using credentials: {DB_USERNAME} / {'*' * len(DB_PASSWORD)}")
+    masked_pw = ('*' * len(DB_PASSWORD)) if DB_PASSWORD else '(not set)'
+    print(f"DEBUG: Using credentials: {DB_USERNAME or '(not set)'} / {masked_pw}")
+
+    # If credentials are not set, skip attempting DB operations
+    if not DB_USERNAME or not DB_PASSWORD:
+        print("DEBUG: DB credentials not set; skipping collection check/creation.")
+        return False
     
     try:
         auth = (DB_USERNAME, DB_PASSWORD)
@@ -140,6 +201,9 @@ def ensure_collection_exists():
 def get_analysis_results():
     """Get all image analysis results from database via REST API."""
     try:
+        if not DB_USERNAME or not DB_PASSWORD:
+            print("DEBUG: DB credentials not set; returning empty analysis results.")
+            return []
         # Ensure collection exists before querying
         if not ensure_collection_exists():
             print("Failed to ensure collection exists")
@@ -208,6 +272,10 @@ def allowed_file(filename):
 @app.route('/')
 def index():
     """Display the main page with upload form and results."""
+    # Warn if DB credentials are not configured
+    if not DB_USERNAME or not DB_PASSWORD:
+        flash('Database credentials are not configured; analysis results will be unavailable until set via Vault or env.', 'warning')
+
     # Get all images from bucket
     images = get_bucket_images()
     
@@ -286,6 +354,9 @@ def view_result(image_filename):
 def delete_analysis_by_filename(filename):
     """Delete analysis results from database by filename via REST API."""
     try:
+        if not DB_USERNAME or not DB_PASSWORD:
+            print("DEBUG: DB credentials not set; skipping DB deletion.")
+            return 0
         # First, get all documents to find the one with matching filename
         auth = (DB_USERNAME, DB_PASSWORD)
         headers = {'Content-Type': 'application/json'}
@@ -397,7 +468,10 @@ if __name__ == '__main__':
         print("OCI clients initialized successfully")
     else:
         print("WARNING: OCI clients not initialized. Upload functionality may not work.")
-    
+
+    # Load DB credentials and ORDS URL from Vault if configured
+    load_db_config_from_vault_if_available()
+
     # Test database connection
     test_results = get_analysis_results()
     print(f"Database connection test: Retrieved {len(test_results)} existing results")

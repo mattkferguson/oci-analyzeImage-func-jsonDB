@@ -1,6 +1,6 @@
-# OCI Event-Driven Image Analysis Application (REST API Version)
+# OCI Serverless AI Image Analysis Stored in Autonomous JSON Database via REST API
 
-This project implements a full, event-driven pipeline on OCI. A web application uploads an image to a bucket, which triggers an OCI Function to perform object detection using the AI Vision service. The results are stored as documents in an **Oracle Autonomous JSON Database** via REST API and displayed in the web app.
+This project implements a full, event-driven pipeline on OCI. A web application uploads an image to an object storage bucket, which triggers an OCI serverless function to perform object detection using OCI's AI Vision service. The JSON results are stored as documents in an **Oracle Autonomous JSON Database** via REST API and displayed in the web app.
 
 **Key Features:**
 - **Wallet-free deployment**: Uses Oracle REST Data Services (ORDS) for simplified database access
@@ -213,6 +213,25 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     ```
     
     Then set the environment variable in your container configurations.
+
+    ### Option D: Fetch ORDS credentials from OCI Vault (Recommended for app)
+
+    This repo now provisions an OCI Vault, KMS Key, and two Secrets (DB username and password). The web app fetches these via Resource Principals at runtime and uses them to authenticate to ORDS.
+
+    - Terraform creates:
+      - Vault: `vision-app-vault`
+      - Key: `vision-app-vault-key`
+      - Secrets: `db_username` (default ADMIN), `db_password` (from `local.db_admin_password`)
+    - Container Instance gets environment variables with Secret OCIDs:
+      - `DB_USERNAME_SECRET_OCID`, `DB_PASSWORD_SECRET_OCID`
+    - At startup, the app resolves secrets from OCI Vault and overrides any hardcoded/env values.
+
+    IAM requirements (in your Identity Domain policies):
+    - Allow the web app dynamic group to read secrets and use keys:
+      - `Allow dynamic-group <DOMAIN_NAME>/WebAppInstanceDynamicGroup to read secret-family in compartment id <YOUR_COMPARTMENT_OCID>`
+      - `Allow dynamic-group <DOMAIN_NAME>/WebAppInstanceDynamicGroup to use keys in compartment id <YOUR_COMPARTMENT_OCID>`
+
+    Optional: You may also store the ORDS base URL in Vault. If you create a secret for this, set `DB_ORDS_URL_SECRET_OCID` as a container environment variable; the app will fetch and use it.
     
     **URL Structure Reference:**
     ```

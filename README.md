@@ -101,6 +101,8 @@ This is a critical step. You must create the correct IAM policies and dynamic gr
     - **private_key_path**: Path to your OCI API private key file
     - **region**: Your OCI region (e.g., ca-toronto-1)
     - **compartment_ocid**: Target compartment for resources
+    - **db_admin_password**: Strong password for the Autonomous Database ADMIN user (meets ADB policy)
+    - (Optional) **availability_domain**: AD name to pin deployment (auto-detects first if omitted)
     
     Terraform will prompt you for any missing values.
 
@@ -174,7 +176,7 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     DB_ORDS_BASE_URL = local.ords_url
     ```
     
-    ### Option B: OCI CLI Script
+    ### Option B: Terraform Output / OCI CLI Script
     
     Create a script to automatically update the URLs:
     
@@ -191,7 +193,9 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
       --query 'data."connection-urls"."apex-url"' \
       --raw-output | sed 's/apex$/ords\//')
     
-    echo "ORDS URL: $ORDS_URL"
+    # Alternatively, from Terraform output (after apply):
+    # ORDS_URL=$(terraform output -raw ords_url)
+    echo "ORDS URL: ${ORDS_URL}"
     
     # Update the Python files
     sed -i "s|DB_ORDS_BASE_URL = \".*\"|DB_ORDS_BASE_URL = \"$ORDS_URL\"|" app/app.py
@@ -221,7 +225,7 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     - Terraform creates:
       - Vault: `vision-app-vault`
       - Key: `vision-app-vault-key`
-      - Secrets: `db_username` (default ADMIN), `db_password` (from `local.db_admin_password`)
+      - Secrets: `db_username` (default ADMIN), `db_password` (from `var.db_admin_password`)
     - Container Instance gets environment variables with Secret OCIDs:
       - `DB_USERNAME_SECRET_OCID`, `DB_PASSWORD_SECRET_OCID`
     - At startup, the app resolves secrets from OCI Vault and overrides any hardcoded/env values.
@@ -259,7 +263,7 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
       provisioner "local-exec" {
         command = <<-EOT
           curl -X PUT \
-            -u "ADMIN:${local.db_admin_password}" \
+            -u "ADMIN:<YOUR_DB_ADMIN_PASSWORD>" \
             -H "Content-Type: application/json" \
             -d '{
               "schemaName": "ADMIN",
@@ -289,9 +293,9 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     For one-time manual collection creation:
     
     ```bash
-    # Replace with your actual database URL and password
+    # Replace with your actual database URL and the admin password you set in terraform.tfvars
     curl -X PUT \
-      -u "ADMIN:0Racle123456" \
+      -u "ADMIN:<YOUR_DB_ADMIN_PASSWORD>" \
       -H "Content-Type: application/json" \
       -d '{
         "schemaName": "ADMIN",
@@ -329,12 +333,13 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     
     After running `terraform apply`, get the automated build commands:
     ```bash
-    # View all build commands
+    # View key-specific commands (map, alphabetical by key)
     terraform output build_commands
-    
-    # Or get specific commands
     terraform output -json build_commands | jq -r '.app_build'
     terraform output -json build_commands | jq -r '.function_build'
+
+    # Or get them as an ordered list for sequential execution
+    terraform output -json build_commands_ordered | jq -r '.[]'
     ```
 
 2.  **OCIR Authentication Setup:**

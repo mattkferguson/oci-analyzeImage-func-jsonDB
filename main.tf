@@ -71,6 +71,12 @@ variable "compartment_ocid" {
   }
 }
 
+variable "db_admin_password" {
+  description = "Admin password to initialize the Autonomous JSON Database (meets ADB password policy)."
+  type        = string
+  sensitive   = true
+}
+
 
 variable "app_image_url" {
   description = "The full URL of the web app Docker image in OCIR (leave empty to auto-generate)"
@@ -101,23 +107,33 @@ variable "bucket_name" {
   default     = "oci-image-analysis-bucket"
 }
 
+variable "availability_domain" {
+  description = "Optional Availability Domain name (e.g., 'XYZ:US-ASHBURN-AD-1'). If unset, the first AD in-region is selected automatically."
+  type        = string
+  default     = ""
+}
+
 # ---------------------------------------------------------------------------
 # Data Sources
 # ---------------------------------------------------------------------------
-# data "oci_identity_availability_domains" "ad" {
-#   compartment_id = var.tenancy_ocid
-# }
-
-# Hardcode availability domain to bypass authentication issue
-locals {
-  availability_domain = "QLkr:CA-TORONTO-1-AD-1"
+data "oci_identity_availability_domains" "ads" {
+  compartment_id = var.tenancy_ocid
 }
 
 data "oci_objectstorage_namespace" "ns" {}
 
 data "oci_core_services" "all_services" {}
 
+# Fetch additional DB connection info including web URLs
+data "oci_database_autonomous_database" "vision_json_db_data" {
+  autonomous_database_id = oci_database_autonomous_database.vision_json_db.id
+}
+
 locals {
+  # Pick provided AD or default to the first available in the region
+  availability_domain = var.availability_domain != "" ? var.availability_domain : data.oci_identity_availability_domains.ads.availability_domains[0].name
+  # Derive ORDS base URL from APEX URL (ends with 'apex'); replace with 'ords/'
+  ords_url = replace(data.oci_database_autonomous_database.vision_json_db_data.connection_urls[0].apex_url, "apex", "")
   all_services_in_network = [
     for service in data.oci_core_services.all_services.services : service
     if strcontains(lower(service.name), "all") && strcontains(lower(service.name), "oracle") && strcontains(lower(service.name), "services")
@@ -309,17 +325,13 @@ resource "oci_database_autonomous_database" "vision_json_db" {
   compartment_id      = var.compartment_ocid
   db_name             = "visionjsondb"
   display_name        = "VisionJsonDB"
-  admin_password      = local.db_admin_password
+  admin_password      = var.db_admin_password
   db_workload         = "AJD"
   cpu_core_count      = 1
   data_storage_size_in_tbs = 1
   whitelisted_ips     = ["0.0.0.0/0"]
   db_version          = "23ai"
   license_model       = "LICENSE_INCLUDED"
-}
-
-locals {
-  db_admin_password = "0Racle123456"
 }
 
 # ---------------------------------------------------------------------------
@@ -354,7 +366,7 @@ resource "oci_vault_secret" "db_password_secret" {
     content_type = "BASE64"
     name         = "current"
     stage        = "CURRENT"
-    content      = base64encode(local.db_admin_password)
+    content      = base64encode(var.db_admin_password)
   }
 }
 
@@ -518,12 +530,6 @@ output "application_url" {
   value       = "http://${oci_load_balancer_load_balancer.app_lb.ip_address_details[0].ip_address}"
 }
 
-output "db_admin_password" {
-  description = "The admin password for the Autonomous Database."
-  value       = local.db_admin_password
-  sensitive   = true
-}
-
 # OCIR and Container Build Information
 output "tenancy_namespace" {
   description = "The tenancy namespace for OCIR repositories"
@@ -560,33 +566,6 @@ output "function_image_full_url" {
   value       = "${local.ocir_base_url}/${local.function_image_name}:${local.function_image_tag}"
 }
 
-# Container Build Commands
-output "build_commands" {
-  description = "Podman/Docker commands to build and push images"
-  value = {
-    app_build = "podman build --platform=linux/amd64 -t ${local.app_image_name}:${local.app_image_tag} -f Dockerfile ."
-    app_tag = "podman tag ${local.app_image_name}:${local.app_image_tag} ${local.ocir_base_url}/${local.app_image_name}:${local.app_image_tag}"
-    app_push = "podman push ${local.ocir_base_url}/${local.app_image_name}:${local.app_image_tag}"
-    
-    function_build = "podman build --platform=linux/amd64 -t ${local.function_image_name}:${local.function_image_tag} -f vision_function/Dockerfile ."
-    function_tag = "podman tag ${local.function_image_name}:${local.function_image_tag} ${local.ocir_base_url}/${local.function_image_name}:${local.function_image_tag}"
-    function_push = "podman push ${local.ocir_base_url}/${local.function_image_name}:${local.function_image_tag}"
-    
-    login = "echo 'YOUR_AUTH_TOKEN' | podman login ${local.region_key}.ocir.io --username '${local.tenancy_namespace}/YOUR_USERNAME' --password-stdin"
-  }
-}
-
-output "database_info" {
-  description = "Database connection information"
-  value = {
-    db_name = oci_database_autonomous_database.vision_json_db.db_name
-    connection_strings = oci_database_autonomous_database.vision_json_db.connection_strings[0]
-    service_console_url = oci_database_autonomous_database.vision_json_db.service_console_url
-    # Extract ORDS URL from connection strings
-    ords_url = replace(oci_database_autonomous_database.vision_json_db.connection_strings[0].profiles[0].value, "jdbc:oracle:thin:@", "")
-  }
-}
-
 output "deployment_summary" {
   description = "Summary of key deployment information"
   value = {
@@ -602,6 +581,32 @@ output "deployment_summary" {
       "3. Run terraform apply again to deploy with the new images"
     ]
   }
+}
+
+# List of build commands for both container web app and function sequential execution
+output "build_commands" {
+  description = "Podman/Docker commands to build and push images"
+  value = [
+    "echo 'YOUR_AUTH_TOKEN' | podman login ${local.region_key}.ocir.io --username '${local.tenancy_namespace}/YOUR_USERNAME' --password-stdin",
+    "podman build --platform=linux/amd64 -t ${local.app_image_name}:${local.app_image_tag} -f Dockerfile .",
+    "podman tag ${local.app_image_name}:${local.app_image_tag} ${local.ocir_base_url}/${local.app_image_name}:${local.app_image_tag}",
+    "podman push ${local.ocir_base_url}/${local.app_image_name}:${local.app_image_tag}",
+    "podman build --platform=linux/amd64 -t ${local.function_image_name}:${local.function_image_tag} -f vision_function/Dockerfile .",
+    "podman tag ${local.function_image_name}:${local.function_image_tag} ${local.ocir_base_url}/${local.function_image_name}:${local.function_image_tag}",
+    "podman push ${local.ocir_base_url}/${local.function_image_name}:${local.function_image_tag}"
+  ]
+}
+
+output "database_info" {
+  description = "Slim database info relevant to this project"
+  value = {
+    ords_url = local.ords_url
+  }
+}
+
+output "ords_url" {
+  description = "ORDS base URL for the Autonomous Database (ends with /ords/)"
+  value       = local.ords_url
 }
 
 # Secrets and Vault outputs (for reference and wiring)

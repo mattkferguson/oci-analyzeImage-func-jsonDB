@@ -9,6 +9,13 @@ private_key_path = "~/.oci/your_api_key.pem"        # Path to your private key f
 region           = "ca-toronto-1"                    # Your OCI region
 compartment_ocid = "ocid1.compartment.oc1..aaaaaaaa..." # Target compartment OCID
 
+# Autonomous Database admin password (required)
+# Must meet ADB password policy: Password must be 12 to 30 characters and contain at least one uppercase letter, one lowercase letter, and one number. The password cannot contain the double quote (") character or the username "admin". (min length, upper/lower, number, special)
+db_admin_password = "ChangeMe-StrongP@ssw0rd"
+
+# Optional: Pin a specific Availability Domain (otherwise the first AD in the region is used)
+# availability_domain = "<TENANCY_PREFIX>:<REGION>-AD-1"  # e.g., "ab12:US-ASHBURN-AD-1"
+
 # Optional: Override default bucket name
 bucket_name = "oci-image-analysis-bucket"
 

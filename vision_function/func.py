@@ -138,6 +138,10 @@ def ensure_collection_exists(db_password):
                 return False
         else:
             log.error(f"Unexpected response checking collection: HTTP {response.status_code}")
+            try:
+                log.error(f"Response body: {response.text}")
+            except Exception:
+                pass
             return False
             
     except Exception as e:

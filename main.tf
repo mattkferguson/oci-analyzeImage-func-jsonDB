@@ -113,6 +113,13 @@ variable "availability_domain" {
   default     = ""
 }
 
+# Toggle to enable/disable ADB private endpoint
+variable "enable_private_endpoint" {
+  description = "When true, create Autonomous DB with a private endpoint in the private subnet; when false, use public endpoint (no IP allowlist)."
+  type        = bool
+  default     = true
+}
+
 # ---------------------------------------------------------------------------
 # Data Sources
 # ---------------------------------------------------------------------------
@@ -200,6 +207,8 @@ resource "oci_core_vcn" "vision_vcn" {
   compartment_id = var.compartment_ocid
   display_name   = "vision-app-vcn"
   cidr_block     = "10.0.0.0/16"
+  # Required for private endpoints: VCN must have a DNS label
+  dns_label      = "visionvcn"
 }
 
 resource "oci_core_internet_gateway" "vision_ig" {
@@ -283,6 +292,28 @@ resource "oci_core_security_list" "app_sl" {
       min = 5000
     }
   }
+  # Allow private subnet workloads to reach Autonomous DB private endpoint over HTTPS (ORDS)
+  ingress_security_rules {
+    protocol  = "6" # TCP
+    # Avoid dependency cycle by using literal CIDR (not subnet reference)
+    source    = "10.0.2.0/24"
+    stateless = false
+    tcp_options {
+      max = 443
+      min = 443
+    }
+  }
+  # Optional: allow SQL*Net to ADB private endpoint if thick client is used
+  ingress_security_rules {
+    protocol  = "6" # TCP
+    # Avoid dependency cycle by using literal CIDR (not subnet reference)
+    source    = "10.0.2.0/24"
+    stateless = false
+    tcp_options {
+      max = 1522
+      min = 1522
+    }
+  }
   egress_security_rules {
     protocol    = "all"
     destination = "0.0.0.0/0"
@@ -297,6 +328,8 @@ resource "oci_core_subnet" "public_subnet" {
   cidr_block        = "10.0.1.0/24"
   route_table_id    = oci_core_route_table.public_rt.id
   security_list_ids = [oci_core_security_list.lb_sl.id]
+  # DNS label required when using private endpoints in the VCN
+  dns_label         = "public"
 }
 
 resource "oci_core_subnet" "private_subnet" {
@@ -306,6 +339,8 @@ resource "oci_core_subnet" "private_subnet" {
   cidr_block        = "10.0.2.0/24"
   route_table_id    = oci_core_route_table.private_rt.id
   security_list_ids = [oci_core_security_list.app_sl.id]
+  # DNS label required for Autonomous DB private endpoint subnet
+  dns_label         = "private"
 }
 
 # ---------------------------------------------------------------------------
@@ -321,7 +356,19 @@ resource "oci_objectstorage_bucket" "uploads_bucket" {
 # ---------------------------------------------------------------------------
 # Autonomous JSON Database
 # ---------------------------------------------------------------------------
+resource "null_resource" "private_ep_toggle" {
+  # Changes whenever the toggle flips, used to force DB replacement
+  triggers = {
+    mode = var.enable_private_endpoint ? "private" : "public"
+  }
+}
+
 resource "oci_database_autonomous_database" "vision_json_db" {
+  lifecycle {
+    create_before_destroy = true
+    # Force replacement when the private/public toggle changes
+    replace_triggered_by = [null_resource.private_ep_toggle]
+  }
   compartment_id      = var.compartment_ocid
   db_name             = "visionjsondb"
   display_name        = "VisionJsonDB"
@@ -329,7 +376,10 @@ resource "oci_database_autonomous_database" "vision_json_db" {
   db_workload         = "AJD"
   cpu_core_count      = 1
   data_storage_size_in_tbs = 1
-  whitelisted_ips     = ["0.0.0.0/0"]
+  # Network access: private endpoint when enabled; otherwise public endpoint
+  # Note: Do NOT set access-control flags for public mode; omit to use default (open)
+  subnet_id                          = var.enable_private_endpoint ? oci_core_subnet.private_subnet.id : null
+  private_endpoint_label             = var.enable_private_endpoint ? "visionjsondb-pe" : null
   db_version          = "23ai"
   license_model       = "LICENSE_INCLUDED"
 }
@@ -407,6 +457,8 @@ resource "oci_functions_function" "vision_function" {
     DB_CONNECTION_STRING    = oci_database_autonomous_database.vision_json_db.connection_strings[0].profiles[2].value # LOW TNS
     THICK_MODE_UPDATE       = "2025-08-06-x86-fix"
     TENANCY_OCID            = var.tenancy_ocid
+    # Provide ORDS base URL so the function does not rely on hardcoded default
+    DB_ORDS_BASE_URL        = local.ords_url
     # Provide secret OCIDs so the function can fetch from OCI Vault
     DB_PASSWORD_SECRET_OCID = oci_vault_secret.db_password_secret.id
     DB_USERNAME_SECRET_OCID = oci_vault_secret.db_username_secret.id
@@ -458,6 +510,7 @@ resource "oci_container_instances_container_instance" "oci_image_app_instance" {
       # Keep for backward compatibility; app ignores these when secrets are present
       DB_CONNECTION_STRING     = oci_database_autonomous_database.vision_json_db.connection_strings[0].profiles[2].value # LOW TNS
       THICK_MODE_UPDATE        = "2025-08-06-x86-fix"
+      DB_ORDS_BASE_URL         = local.ords_url
       # Secret OCIDs for app to fetch via Resource Principals + Secrets service
       DB_PASSWORD_SECRET_OCID  = oci_vault_secret.db_password_secret.id
       DB_USERNAME_SECRET_OCID  = oci_vault_secret.db_username_secret.id

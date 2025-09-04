@@ -104,6 +104,17 @@ This is a critical step. You must create the correct IAM policies and dynamic gr
     
     Terraform will prompt you for any missing values.
 
+    Network access toggle (Autonomous DB private endpoint)
+    - `enable_private_endpoint` (boolean)
+      - `true`: Creates the Autonomous JSON Database with a private endpoint in the private subnet (recommended for production).
+      - `false`: Creates the database with a public endpoint (open; convenient for quick demos).
+    - Switching from `false` → `true` causes replacement:
+      - Terraform will create a new database and then destroy the old one (`create_before_destroy = true`).
+      - Data is NOT preserved across this replacement. For production, plan a migration.
+    - If you need to keep data, consider:
+      - Export/import via SODA or Data Pump.
+      - Side‑by‑side cutover: create a new private DB, repoint app/function, then decommission the old DB.
+
 2.  **Initialize Terraform:**
     ```bash
     terraform init -upgrade

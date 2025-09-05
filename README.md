@@ -1,6 +1,6 @@
-# OCI Serverless AI Image Analysis Stored in Autonomous JSON Database via REST API
+# OCI Serverless AI Image Analysis Stored in Autonomous JSON Database via ORDS
 
-This project implements a full, event-driven pipeline on OCI. A web application uploads an image to an object storage bucket, which triggers an OCI serverless function to perform object detection using OCI's AI Vision service. The JSON results are stored as documents in an **Oracle Autonomous JSON Database** via REST API and displayed in the web app.
+This project implements a full, event-driven pipeline on OCI. A web application uploads an image to an object storage bucket, which triggers an OCI function for object detection using OCI's AI Vision service. The JSON results are then stored as documents in an **Oracle Autonomous JSON Database** via Oracle REST Data Service (ORDS) and displayed in the web app.
 
 **Key Features:**
 - **Wallet-free deployment**: Uses Oracle REST Data Services (ORDS) for simplified database access
@@ -8,23 +8,8 @@ This project implements a full, event-driven pipeline on OCI. A web application 
 - **Event-driven architecture**: Automatic processing when images are uploaded
 - **Complete data consistency**: Proper cleanup of both storage and database records
 
-## Architecture Diagram
+## WorkflowDiagram
 <img src="/images/visionWorkflow.jpg" alt="Vision Function Workflow" width="1024">
-```
-[User] -> [Web Browser] -> [Flask Web App (OCI Container Instance)]
-   |
-   v
-[1. Upload Image] -> [OCI Object Storage (Uploads Bucket)]
-   |
-   v (Triggers Event)
-[2. OCI Event Rule] -> [3. OCI Function (vision-analyzer-func-ajd)]
-   |
-   v (Calls Vision API)
-[4. OCI AI Vision Service] -> [Returns JSON]
-   |
-   v (Saves Result)
-[5. Autonomous JSON Database] <- [Web App reads from DB]
-```
 
 ---
 
@@ -78,7 +63,11 @@ This is a critical step. You must create the correct IAM policies and dynamic gr
     Allow dynamic-group <DOMAIN_NAME>/WebAppInstanceDynamicGroup to use autonomous-databases in compartment id <YOUR_COMPARTMENT_OCID>
     Allow dynamic-group <DOMAIN_NAME>/WebAppInstanceDynamicGroup to use database-family in compartment id <YOUR_COMPARTMENT_OCID>
 
-    # --- Permissions for the OCI Event service ---
+    # --- Permission for web app to read secrets and use keys from Vault Service ---
+    Allow dynamic-group <DOMAIN_NAME>/WebAppInstanceDynamicGroup to read secret-family in compartment id <YOUR_COMPARTMENT_OCID>`
+    Allow dynamic-group <DOMAIN_NAME>/WebAppInstanceDynamicGroup to use keys in compartment id <YOUR_COMPARTMENT_OCID>`
+
+    # --- Permissions for logging  ---
     Allow service logging to use functions-family in compartment id <YOUR_COMPARTMENT_OCID>
     ```
     *(Replace `<DOMAIN_NAME>` with the name of your identity domain, e.g., `OracleIdentityCloudService`).*
@@ -155,56 +144,6 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
         *   **File 2**: `vision_function/func.py` - Line ~13
         *   **Value**: Use the exact URL from step 1 above (including trailing slash)
     
-    **Automated Methods (Alternative Approaches):**
-    
-    ### Option A: Terraform Data Source (Recommended)
-    
-    Add this to your `main.tf` to automatically retrieve the ORDS URL:
-    
-    ```hcl
-    # Get the ORDS URL from the database
-    data "oci_database_autonomous_database" "vision_json_db_data" {
-      autonomous_database_id = oci_database_autonomous_database.vision_json_db.id
-    }
-    
-    locals {
-      # Extract ORDS URL from connection strings
-      ords_url = "${data.oci_database_autonomous_database.vision_json_db_data.connection_urls[0].apex_url}ords/"
-    }
-    
-    # Pass ORDS URL to containers via environment variable
-    # Update your container configurations:
-    ```
-    
-    Then update your container instance and function configurations to include:
-    
-    ```hcl
-    # In container instance environment_variables:
-    DB_ORDS_BASE_URL = local.ords_url
-    
-    # In function config:
-    DB_ORDS_BASE_URL = local.ords_url
-    ```
-    
-    ### Option B: Fetch ORDS credentials from OCI Vault (Recommended for app)
-
-    This repo now provisions an OCI Vault, KMS Key, and two Secrets (DB username and password). The web app fetches these via Resource Principals at runtime and uses them to authenticate to ORDS.
-
-    - Terraform creates:
-      - Vault: `vision-app-vault`
-      - Key: `vision-app-vault-key`
-      - Secrets: `db_username` (default ADMIN), `db_password` (from `local.db_admin_password`)
-    - Container Instance gets environment variables with Secret OCIDs:
-      - `DB_USERNAME_SECRET_OCID`, `DB_PASSWORD_SECRET_OCID`
-    - At startup, the app resolves secrets from OCI Vault and overrides any hardcoded/env values.
-
-    IAM requirements (in your Identity Domain policies):
-    - Allow the web app dynamic group to read secrets and use keys:
-      - `Allow dynamic-group <DOMAIN_NAME>/WebAppInstanceDynamicGroup to read secret-family in compartment id <YOUR_COMPARTMENT_OCID>`
-      - `Allow dynamic-group <DOMAIN_NAME>/WebAppInstanceDynamicGroup to use keys in compartment id <YOUR_COMPARTMENT_OCID>`
-
-    Optional: You may also store the ORDS base URL in Vault. If you create a secret for this, set `DB_ORDS_URL_SECRET_OCID` as a container environment variable; the app will fetch and use it.
-    
     **URL Structure Reference:**
     ```
     Base ORDS URL:     https://[unique-id]-visionjsondb.adb.[region].oraclecloudapps.com/ords/
@@ -214,40 +153,13 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
 
 3.  **Database Collection Setup:**
     
-    **✅ Automatic Setup (Already Implemented)**
+    **Automatic Setup**
     
-    The application includes automatic collection creation logic via the `ensure_collection_exists()` function in both the web app and function. The `IMAGE_ANALYSIS` collection will be created automatically when first accessed. **No manual intervention required.**
+    The application includes automatic collection creation in the Autonomous JSON Database via the `ensure_collection_exists()` function in both the web app and function. The `IMAGE_ANALYSIS` collection will be created automatically when first accessed. **No manual intervention required.**
     
-    **Alternative Approaches (For Reference Only)**
+    **Alternative Approach (For Reference Only)**
     
-    ### Option B: Manual CLI Creation
-    
-    For one-time manual collection creation:
-    
-    ```bash
-    # Replace with your actual database URL and password
-    curl -X PUT \
-      -u "ADMIN:0Racle123456" \
-      -H "Content-Type: application/json" \
-      -d '{
-        "schemaName": "ADMIN",
-        "tableName": "IMAGE_ANALYSIS",
-        "keyColumn": {
-          "name": "ID",
-          "sqlType": "VARCHAR2", 
-          "maxLength": 255,
-          "assignmentMethod": "UUID"
-        },
-        "contentColumn": {
-          "name": "JSON_DOCUMENT",
-          "sqlType": "BLOB",
-          "jsonFormat": "OSON"
-        }
-      }' \
-      "https://your-database-url/ords/admin/soda/latest/IMAGE_ANALYSIS"
-    ```
-    
-    ### Option C: Database Console Creation
+    ### Database Console Creation
     
     You can also create the collection through the Oracle Database Actions console:
     1. Access Database Actions from your Autonomous Database console
@@ -259,7 +171,7 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
 
 ## Part 4: Build and Deploy Container Images
 
-**✅ Automated OCIR Setup:** Terraform has already created the OCIR repositories and generated all the necessary commands for you!
+**Automated OCIR Setup:** Terraform has already created the OCIR repositories and generated all the necessary commands for you!
 
 1.  **Get Container Build Commands:**
     
@@ -267,10 +179,6 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     ```bash
     # View all build commands
     terraform output build_commands
-    
-    # Or get specific commands
-    terraform output -json build_commands | jq -r '.app_build'
-    terraform output -json build_commands | jq -r '.function_build'
     ```
 
 2.  **OCIR Authentication Setup:**
@@ -417,53 +325,6 @@ The application uses Oracle Autonomous Database REST API authentication:
 
 ---
 
-## Lessons Learned
-
-### REST API Implementation Benefits
-1. **Simplified Database Access**: Direct HTTP calls to Oracle REST Data Services (ORDS)
-   - **No driver complexity**: Uses standard HTTP requests with `requests` library
-   - **No connection management**: Stateless REST calls eliminate connection pooling issues
-
-2. **Easier Deployment**: No Oracle Instant Client or wallet files required
-   - **Lightweight containers**: Smaller Docker images without Oracle dependencies
-   - **Cross-platform compatibility**: Works consistently across different architectures
-
-3. **Better Error Handling**: Standard HTTP status codes for database operations
-   - **Clear error messages**: HTTP responses provide detailed error information
-   - **Timeout control**: Configurable request timeouts for database calls
-
-### Terraform Infrastructure Challenges
-1. **Password Requirements**: Autonomous Database requires specific password complexity
-   - **Solution**: Use `random_password` resource with proper constraints (min_numeric, min_upper, etc.)
-
-2. **Function Architecture Mismatch**: ARM vs x86_64 compatibility issues
-   - **Solution**: Use `GENERIC_X86` function shape and `--platform=linux/amd64` for all builds
-
-3. **Load Balancer Backend Dependencies**: Backend creation fails when container IP changes
-   - **Solution**: Terraform automatically handles replacement when container instances are recreated
-
-### Development Workflow Insights
-1. **REST API Configuration**: Ensure correct database endpoint URL
-   - **Check ORDS URL in database Service Console**
-   - **Update DB_BASE_URL in both web app and function code**
-   - **Verify ADMIN password matches Terraform configuration**
-
-2. **HTTP Request Handling**: REST API responses need proper error handling
-   - **Check HTTP status codes before processing responses**
-   - **Implement timeouts for database requests**
-
-3. **Function vs Web App Consistency**: Both need identical database REST API logic
-   - **Keep REST API configuration synchronized between components**
-   - **Use same request patterns and error handling**
-
-### Oracle Database Best Practices
-1. **REST API Usage**: Use ORDS REST API for simplified database access
-2. **HTTP Error Handling**: Always check response status codes for REST calls
-3. **Request Timeout**: Implement reasonable timeouts for HTTP requests
-4. **Authentication**: Use ADMIN user credentials for HTTP Basic Authentication
-
----
-
 ## Troubleshooting
 
 ### REST API Specific Issues
@@ -477,9 +338,10 @@ The application uses Oracle Autonomous Database REST API authentication:
     - **Solution**: Collection is created automatically on first document insert via REST API
 
 ### Database Connection Issues
-*   **HTTP 401 Unauthorized**: Incorrect database username/password. Verify ADMIN password matches Terraform configuration.
-*   **HTTP 404 Not Found**: REST API endpoint URL is incorrect. Check database ORDS URL in OCI Console.
-*   **Connection timeout**: Database REST endpoint not accessible. Verify database is running and ORDS is enabled.
+
+* **HTTP 401 Unauthorized**: Incorrect database username/password. Verify ADMIN password matches Terraform configuration.
+*  **HTTP 404 Not Found**: REST API endpoint URL is incorrect. Check database ORDS URL in OCI Console.
+*  **Connection timeout**: Database REST endpoint not accessible. Verify database is running and ORDS is enabled.
 
 ### Container/Function Issues
 *   **`requests.exceptions.ConnectionError`**: Database REST API not accessible. Check DB_BASE_URL configuration.

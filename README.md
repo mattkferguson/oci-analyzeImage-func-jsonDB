@@ -9,6 +9,7 @@ This project implements a full, event-driven pipeline on OCI. A web application 
 - **Complete data consistency**: Proper cleanup of both storage and database records
 
 ## Architecture Diagram
+<img src="/images/visionWorkflow.jpg" alt="Vision Function Workflow" width="1024">
 ```
 [User] -> [Web Browser] -> [Flask Web App (OCI Container Instance)]
    |

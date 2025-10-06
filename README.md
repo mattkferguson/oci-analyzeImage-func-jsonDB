@@ -78,12 +78,12 @@ This is a critical step. You must create the correct IAM policies and dynamic gr
 ## Part 2: Configure and Deploy Infrastructure
 
 1.  **Configure Terraform Variables:**
-    
+
     Copy the example variables file and update with your OCI credentials:
     ```bash
     cp terraform.tfvars.example terraform.tfvars
     ```
-    
+
     Edit `terraform.tfvars` and provide:
     - **tenancy_ocid**: From OCI Console → Tenancy Information
     - **user_ocid**: From OCI Console → User Settings
@@ -91,7 +91,7 @@ This is a critical step. You must create the correct IAM policies and dynamic gr
     - **private_key_path**: Path to your OCI API private key file
     - **region**: Your OCI region (e.g., ca-toronto-1)
     - **compartment_ocid**: Target compartment for resources
-    
+
     Terraform will prompt you for any missing values.
 
     Network access toggle (Autonomous DB private endpoint)
@@ -114,7 +114,7 @@ This is a critical step. You must create the correct IAM policies and dynamic gr
     ```bash
     terraform apply
     ```
-    
+
     **Important:** This deployment will:
     - Create the Autonomous Database with REST API access
     - Create OCIR repositories for your container images
@@ -128,7 +128,7 @@ This is a critical step. You must create the correct IAM policies and dynamic gr
 The application uses Oracle REST Data Services (ORDS) to access the database using HTTP Basic Authentication.
 
 1.  **Find Your Database ORDS URL:**
-    
+
     **Manual Method:**
     *   In the OCI Console, navigate to **Oracle Database** → **Autonomous Database**.
     *   Find your database (`visionjsondb`) and click on it.
@@ -137,13 +137,13 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     *   This URL should look like: `https://[unique-id]-visionjsondb.adb.[region].oraclecloudapps.com/ords/`
 
 2.  **Update Database Configuration:**
-    
+
     **Manual Update:**
     *   **IMPORTANT**: Update the `DB_ORDS_BASE_URL` in both files to match your database's ORDS endpoint:
         *   **File 1**: `app/app.py` - Line ~19
         *   **File 2**: `vision_function/func.py` - Line ~13
         *   **Value**: Use the exact URL from step 1 above (including trailing slash)
-    
+
     **URL Structure Reference:**
     ```
     Base ORDS URL:     https://[unique-id]-visionjsondb.adb.[region].oraclecloudapps.com/ords/
@@ -152,15 +152,15 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     ```
 
 3.  **Database Collection Setup:**
-    
+
     **Automatic Setup**
-    
+
     The application includes automatic collection creation in the Autonomous JSON Database via the `ensure_collection_exists()` function in both the web app and function. The `IMAGE_ANALYSIS` collection will be created automatically when first accessed. **No manual intervention required.**
-    
+
     **Alternative Approach (For Reference Only)**
-    
+
     ### Database Console Creation
-    
+
     You can also create the collection through the Oracle Database Actions console:
     1. Access Database Actions from your Autonomous Database console
     2. Navigate to **JSON** section
@@ -174,7 +174,7 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
 **Automated OCIR Setup:** Terraform has already created the OCIR repositories and generated all the necessary commands for you!
 
 1.  **Get Container Build Commands:**
-    
+
     After running `terraform apply`, get the automated build commands:
     ```bash
     # View all build commands
@@ -182,21 +182,21 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     ```
 
 2.  **OCIR Authentication Setup:**
-    
+
     **Option A: Public Repositories (Default - Easier)**
     ```bash
     # With make_repositories_public = true, you still need to authenticate to push
     # but anyone can pull the images
     ```
-    
+
     **Option B: Private Repositories (More Secure)**
     ```bash
     # With make_repositories_public = false, authentication required for both push and pull
     ```
-    
+
     **Generate Auth Token (Required for Both Options):**
     *   In the OCI Console, go to **Profile** → **User Settings** → **Auth Tokens**
-    *   Click **"Generate Token"** 
+    *   Click **"Generate Token"**
     *   **Description:** "OCIR Docker Login"
     *   Copy the generated token immediately (it won't be shown again)
 
@@ -205,49 +205,36 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     # Get your tenancy namespace and region key
     TENANCY_NAMESPACE=$(terraform output -raw tenancy_namespace)
     REGION_KEY=$(terraform output -raw region_key)
-    
+
     # Login with your OCI username and auth token
     echo 'YOUR_AUTH_TOKEN' | podman login ${REGION_KEY}.ocir.io --username "${TENANCY_NAMESPACE}/your.email@domain.com" --password-stdin
-    
+
     # Example:
     # echo 'A1B2C3...' | podman login yyz.ocir.io --username 'matferg8320/matt.ferguson@oracle.com' --password-stdin
     ```
-    
+
     **Troubleshooting Login Issues:**
     ```bash
     # If you get 403 errors, verify:
     # 1. Auth token is correct and not expired
     # 2. Username format is exactly: tenancy_namespace/your_oci_username
     # 3. You have proper permissions in OCI
-    
+
     # Test login
     podman login ${REGION_KEY}.ocir.io --get-login
     ```
 
 4.  **Build and Push Images:**
     ```bash
-    # Build web application
-    $(terraform output -json build_commands | jq -r '.app_build')
-    $(terraform output -json build_commands | jq -r '.app_tag')
-    $(terraform output -json build_commands | jq -r '.app_push')
-    
-    # Build function
-    $(terraform output -json build_commands | jq -r '.function_build')
-    $(terraform output -json build_commands | jq -r '.function_tag')
-    $(terraform output -json build_commands | jq -r '.function_push')
-    ```
-    
-    **Alternative (Manual Commands):**
-    ```bash
     # Get repository URLs
     APP_IMAGE_URL=$(terraform output -raw app_image_full_url)
     FUNCTION_IMAGE_URL=$(terraform output -raw function_image_full_url)
-    
+
     # Build and push web app
     podman build --platform=linux/amd64 -t oci-image-upload-app-ajd:latest -f Dockerfile .
     podman tag oci-image-upload-app-ajd:latest $APP_IMAGE_URL
     podman push $APP_IMAGE_URL
-    
+
     # Build and push function
     podman build --platform=linux/amd64 -t vision-analyzer-func-ajd:latest -f vision_function/Dockerfile .
     podman tag vision-analyzer-func-ajd:latest $FUNCTION_IMAGE_URL
@@ -264,7 +251,7 @@ After pushing images to OCIR, the infrastructure will automatically use them:
     ```bash
     # Check deployment status
     terraform output deployment_summary
-    
+
     # Get application URL
     terraform output application_url
     ```
@@ -355,7 +342,7 @@ The application uses Oracle Autonomous Database REST API authentication:
 *   **`Object of type JsonId is not JSON serializable`**: Oracle JsonId objects can't be serialized
     - **Solution**: Use `json.loads(json.dumps(data, default=str))` to clean data
 
-### Infrastructure Issues  
+### Infrastructure Issues
 *   **Load balancer shows "No backends"**: Container instance failed to start. Check container logs.
 *   **IAM authentication failures**: Verify Dynamic Groups and IAM policies are created in the correct Identity Domain.
 *   **Terraform bucket deletion error**: Manually empty Object Storage bucket before `terraform destroy`.

@@ -2,6 +2,8 @@
 
 This project implements a full, event-driven pipeline on OCI. A web application uploads an image to an object storage bucket, which triggers an OCI function for object detection using OCI's AI Vision service. The JSON results are then stored as documents in an **Oracle Autonomous JSON Database** via Oracle REST Data Service (ORDS) and displayed in the web app.
 
+For more information and detailed step-by-step instructions visit [How to Build a Serverless Image Analysis Pipeline on OCI]/(https://www.cloudnativenotes.com/post/ocivision-serverless-pipeline/) blog post.  
+
 **Key Features:**
 - **Wallet-free deployment**: Uses Oracle REST Data Services (ORDS) for simplified database access
 - **Resource Principal authentication**: No credential management required
@@ -210,7 +212,7 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     echo 'YOUR_AUTH_TOKEN' | podman login ${REGION_KEY}.ocir.io --username "${TENANCY_NAMESPACE}/your.email@domain.com" --password-stdin
 
     # Example:
-    # echo 'A1B2C3...' | podman login yyz.ocir.io --username 'matferg8320/matt.ferguson@oracle.com' --password-stdin
+    # echo 'A1B2C3...' | podman login yyz.ocir.io --username 'tenancy_name/user@atcompany.com' --password-stdin
     ```
 
     **Troubleshooting Login Issues:**
@@ -241,11 +243,21 @@ The application uses Oracle REST Data Services (ORDS) to access the database usi
     podman push $FUNCTION_IMAGE_URL
     ```
 
+**Important** This project uses a two-step deployment process
+
+The first `terraform apply` uses placeholder images `(use_placeholder_images = true)` in `terrafrom.tfvars` to create all the necessary infrastructure, including the Container Repository (OCIR). You'll need to run `terraform apply` a second time to point the services to your new images.
+
+After you've built and pushed your images:
+
+- Double check that you’ve set your `terraform.tfvars` to `use_placeholder_images = false` as this updates the Web App container instance and Function to use the new IMAGE URL and pull from OCIR.
+
+- Run `terraform apply` again
+
 ---
 
 ## Part 5: Final Deployment
 
-After pushing images to OCIR, the infrastructure will automatically use them:
+After pushing images to OCIR, and reruning `terraform apply` with the  `use_placeholder_images = false` the infrastructure will automatically use them:
 
 1.  **Verify Deployment:**
     ```bash

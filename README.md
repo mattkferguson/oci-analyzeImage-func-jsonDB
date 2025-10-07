@@ -2,7 +2,7 @@
 
 This project implements a full, event-driven pipeline on OCI. A web application uploads an image to an object storage bucket, which triggers an OCI function for object detection using OCI's AI Vision service. The JSON results are then stored as documents in an **Oracle Autonomous JSON Database** via Oracle REST Data Service (ORDS) and displayed in the web app.
 
-For more information and detailed step-by-step instructions visit [How to Build a Serverless Image Analysis Pipeline on OCI](https://www.cloudnativenotes.com/post/ocivision-serverless-pipeline/) blog post.  
+For more information and detailed step-by-step instructions visit my [How to Build a Serverless Image Analysis Pipeline on OCI](https://www.cloudnativenotes.com/post/ocivision-serverless-pipeline/) blog post.  
 
 **Key Features:**
 - **Wallet-free deployment**: Uses Oracle REST Data Services (ORDS) for simplified database access

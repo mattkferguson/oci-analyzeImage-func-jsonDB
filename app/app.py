@@ -18,7 +18,7 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 # Database REST API Configuration (defaults; may be overridden via Vault)
 DB_ORDS_BASE_URL = os.environ.get(
     'DB_ORDS_BASE_URL',
-    "https://g4f1b0a16e960d1-visionjsondb.adb.ca-toronto-1.oraclecloudapps.com/ords/"
+    "https://xxxxxxx-visionjsondb.adb.ca-toronto-1.oraclecloudapps.com/ords/"
 )
 DB_SCHEMA = "admin"  # Schema name (lowercase for URL)
 DB_SODA_PATH = f"{DB_SCHEMA}/soda/latest"

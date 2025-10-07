@@ -1,4 +1,4 @@
-# OCI Serverless AI Image Analysis Stored in Autonomous JSON Database via ORDS
+# How to Build a Serverless Image Analysis Pipeline on OCI
 
 This project implements a full, event-driven pipeline on OCI. A web application uploads an image to an object storage bucket, which triggers an OCI function for object detection using OCI's AI Vision service. The JSON results are then stored as documents in an **Oracle Autonomous JSON Database** via Oracle REST Data Service (ORDS) and displayed in the web app.
 
